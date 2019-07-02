@@ -2439,3 +2439,26 @@ func (s *testSuite4) TestAutoIDInRetry(c *C) {
 	tk.MustExec("insert into t values ()")
 	tk.MustQuery(`select * from t`).Check(testkit.Rows("1", "2", "3", "4", "5"))
 }
+
+func (s *testSuite4) TestSetWithRefGenCol(c *C) {
+
+	tk := testkit.NewTestKitWithInit(c, s.store)
+	tk.MustExec("use test")
+	tk.MustExec(`create table t (i int, j int as (i+1) not null);`)
+	tk.MustExec(`insert into t set i = j + 1;`)
+	tk.MustQuery("select * from t").Check(testkit.Rows("1 2"))
+	tk.MustExec(`insert into t set i = j + 100;`)
+	tk.MustQuery("select * from t").Check(testkit.Rows("1 2", "100 101"))
+
+	tk.MustExec(`create table te (i int)`)
+	tk.MustExec(`insert into te set i = i + 10;`)
+	tk.MustQuery("select * from te").Check(testkit.Rows("<nil>"))
+	tk.MustExec(`insert into te set i = i;`)
+	tk.MustQuery("select * from te").Check(testkit.Rows("<nil>", "<nil>"))
+
+	tk.MustExec(`create table tn (i int not null)`)
+	tk.MustExec(`insert into tn set i = i;`)
+	tk.MustQuery("select * from tn").Check(testkit.Rows("0"))
+	tk.MustExec(`insert into tn set i = i + 10;`)
+	tk.MustQuery("select * from tn").Check(testkit.Rows("0", "10"))
+}

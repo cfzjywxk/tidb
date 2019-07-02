@@ -434,12 +434,6 @@ func (e *InsertValues) fillRow(row []types.Datum, hasValue []bool) ([]types.Datu
 	gIdx := 0
 	for i, c := range e.Table.Cols() {
 		var err error
-		// Get the default value for all no value columns, the auto increment column is different from the others.
-		row[i], err = e.fillColValue(row[i], i, c, hasValue[i])
-		if err != nil {
-			return nil, err
-		}
-
 		// Evaluate the generated columns.
 		if c.IsGenerated() {
 			var val types.Datum
@@ -449,6 +443,12 @@ func (e *InsertValues) fillRow(row []types.Datum, hasValue []bool) ([]types.Datu
 				return nil, err
 			}
 			row[i], err = table.CastValue(e.ctx, val, c.ToInfo())
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Get the default value for all no value columns, the auto increment column is different from the others.
+			row[i], err = e.fillColValue(row[i], i, c, hasValue[i])
 			if err != nil {
 				return nil, err
 			}
