@@ -215,7 +215,7 @@ func (e *LoadDataInfo) getLine(prevData, curData []byte) ([]byte, []byte, bool) 
 // If it has the rest of data isn't completed the processing, then it returns without completed data.
 // If the number of inserted rows reaches the batchRows, then the second return value is true.
 // If prevData isn't nil and curData is nil, there are no other data to deal with and the isEOF is true.
-func (e *LoadDataInfo) InsertData(prevData, curData []byte) ([]byte, bool, error) {
+func (e *LoadDataInfo) InsertData(prevData, curData []byte, txnBatchCheckIns bool) ([]byte, bool, error) {
 	if len(prevData) == 0 && len(curData) == 0 {
 		return nil, false, nil
 	}
@@ -260,6 +260,12 @@ func (e *LoadDataInfo) InsertData(prevData, curData []byte) ([]byte, bool, error
 			logutil.BgLogger().Info("batch limit hit when inserting rows", zap.Int("maxBatchRows", e.maxChunkSize),
 				zap.Uint64("totalRows", e.rowCount))
 			break
+		}
+	}
+	if !txnBatchCheckIns {
+		err := e.CheckAndInsertOneBatch()
+		if err != nil {
+			return nil, reachLimit, err
 		}
 	}
 	return curData, reachLimit, nil

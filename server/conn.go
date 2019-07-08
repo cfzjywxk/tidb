@@ -1041,17 +1041,20 @@ var defaultLoadDataBatchCnt uint64 = 20000
 func insertDataWithCommit(ctx context.Context, prevData, curData []byte, loadDataInfo *executor.LoadDataInfo) ([]byte, error) {
 	var err error
 	var reachLimit bool
+	var txnBatchCheckIns = true
 	for {
-		prevData, reachLimit, err = loadDataInfo.InsertData(prevData, curData)
+		prevData, reachLimit, err = loadDataInfo.InsertData(prevData, curData, txnBatchCheckIns)
 		if err != nil {
 			return nil, err
 		}
 		if !reachLimit {
 			break
 		}
-		err := loadDataInfo.CheckAndInsertOneBatch()
-		if err != nil {
-			return nil, err
+		if txnBatchCheckIns {
+			err := loadDataInfo.CheckAndInsertOneBatch()
+			if err != nil {
+				return nil, err
+			}
 		}
 		if err = loadDataInfo.Ctx.StmtCommit(); err != nil {
 			return nil, err
