@@ -112,6 +112,7 @@ type LoadDataInfo struct {
 // SetMaxRowsInBatch sets the max number of rows to insert in a batch.
 func (e *LoadDataInfo) SetMaxRowsInBatch(limit uint64) {
 	e.maxRowsInBatch = limit
+	e.rows = make([][]types.Datum, 0, limit)
 }
 
 // getValidData returns prevData and curData that starts from starting symbol.
