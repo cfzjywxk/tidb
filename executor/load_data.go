@@ -255,7 +255,11 @@ func (e *LoadDataInfo) InsertData(ctx context.Context, prevData, curData []byte)
 		}
 		e.rows = append(e.rows, e.colsToRow(ctx, cols))
 		e.rowCount++
+		e.curBatchCnt++
 		if e.maxRowsInBatch != 0 && e.rowCount%e.maxRowsInBatch == 0 {
+			if e.curBatchCnt != e.maxRowsInBatch {
+				panic("testttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt")
+			}
 			reachLimit = true
 			logutil.BgLogger().Info("batch limit hit when inserting rows", zap.Int("maxBatchRows", e.maxChunkSize),
 				zap.Uint64("totalRows", e.rowCount))
@@ -268,15 +272,16 @@ func (e *LoadDataInfo) InsertData(ctx context.Context, prevData, curData []byte)
 // CheckAndInsertOneBatch is used to commit one transaction batch full filled data
 func (e *LoadDataInfo) CheckAndInsertOneBatch() error {
 	var err error
-	if len(e.rows) == 0 {
+	if e.curBatchCnt == 0 {
 		return err
 	}
-	e.ctx.GetSessionVars().StmtCtx.AddRecordRows(uint64(len(e.rows)))
-	err = e.batchCheckAndInsert(e.rows, e.addRecordLD)
+	e.ctx.GetSessionVars().StmtCtx.AddRecordRows(e.curBatchCnt)
+	err = e.batchCheckAndInsert(e.rows[0:e.curBatchCnt], e.addRecordLD)
 	if err != nil {
 		return err
 	}
 	e.rows = e.rows[:0]
+	e.curBatchCnt = 0
 	return err
 }
 
