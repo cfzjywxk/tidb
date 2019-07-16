@@ -379,6 +379,20 @@ func (e *InsertValues) getRow(ctx context.Context, vals []types.Datum) ([]types.
 	return e.fillRow(ctx, row, hasValue)
 }
 
+func (e *InsertValues) getRowInPlace(ctx context.Context, vals []types.Datum, rowBuf []types.Datum) ([]types.Datum, error) {
+	hasValue := make([]bool, len(e.Table.Cols()))
+	for i, v := range vals {
+		casted, err := table.CastValue(e.ctx, v, e.insertColumns[i].ToInfo())
+		if e.filterErr(err) != nil {
+			return nil, err
+		}
+		offset := e.insertColumns[i].Offset
+		rowBuf[offset] = casted
+		hasValue[offset] = true
+	}
+	return e.fillRow(ctx, rowBuf, hasValue)
+}
+
 func (e *InsertValues) filterErr(err error) error {
 	if err == nil {
 		return nil

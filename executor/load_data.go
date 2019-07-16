@@ -112,7 +112,12 @@ type LoadDataInfo struct {
 // SetMaxRowsInBatch sets the max number of rows to insert in a batch.
 func (e *LoadDataInfo) SetMaxRowsInBatch(limit uint64) {
 	e.maxRowsInBatch = limit
-	e.rows = make([][]types.Datum, 0, limit)
+	if uint64(cap(e.rows)) < limit {
+		e.rows = make([][]types.Datum, 0, limit)
+		for i := 0; uint64(i) < limit; i++ {
+			e.rows = append(e.rows, make([]types.Datum, len(e.Table.Cols())))
+		}
+	}
 }
 
 // getValidData returns prevData and curData that starts from starting symbol.
@@ -253,7 +258,8 @@ func (e *LoadDataInfo) InsertData(ctx context.Context, prevData, curData []byte)
 		if err != nil {
 			return nil, false, err
 		}
-		e.rows = append(e.rows, e.colsToRow(ctx, cols))
+		//e.rows = append(e.rows, e.colsToRow(ctx, cols))
+		e.colsToRow(ctx, cols)
 		e.rowCount++
 		e.curBatchCnt++
 		if e.maxRowsInBatch != 0 && e.rowCount%e.maxRowsInBatch == 0 {
@@ -280,7 +286,7 @@ func (e *LoadDataInfo) CheckAndInsertOneBatch() error {
 	if err != nil {
 		return err
 	}
-	e.rows = e.rows[:0]
+	//e.rows = e.rows[:0]
 	e.curBatchCnt = 0
 	return err
 }
@@ -317,7 +323,8 @@ func (e *LoadDataInfo) colsToRow(ctx context.Context, cols []field) []types.Datu
 			e.row[i].SetString(string(cols[i].str))
 		}
 	}
-	row, err := e.getRow(ctx, e.row)
+	//row, err := e.getRow(ctx, e.row)
+	row, err := e.getRowInPlace(ctx, e.row, e.rows[e.curBatchCnt])
 	if err != nil {
 		e.handleWarning(err)
 		return nil
