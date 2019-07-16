@@ -35,6 +35,7 @@ type InsertValues struct {
 	batchChecker
 
 	rowCount       uint64
+	curBatchCnt    uint64
 	maxRowsInBatch uint64
 	lastInsertID   uint64
 	hasRefCols     bool
@@ -547,9 +548,9 @@ func (e *InsertValues) batchCheckAndInsert(rows [][]types.Datum, addRecord func(
 	}
 	// append warnings and get no duplicated error rows
 	for i, r := range e.toBeCheckedRows {
+		skip := false
 		if r.handleKey != nil {
 			if _, found := e.dupKVs[string(r.handleKey.newKV.key)]; found {
-				rows[i] = nil
 				e.ctx.GetSessionVars().StmtCtx.AppendWarning(r.handleKey.dupErr)
 				continue
 			}
@@ -557,15 +558,15 @@ func (e *InsertValues) batchCheckAndInsert(rows [][]types.Datum, addRecord func(
 		for _, uk := range r.uniqueKeys {
 			if _, found := e.dupKVs[string(uk.newKV.key)]; found {
 				// If duplicate keys were found in BatchGet, mark row = nil.
-				rows[i] = nil
 				e.ctx.GetSessionVars().StmtCtx.AppendWarning(uk.dupErr)
+				skip = true
 				break
 			}
 		}
 		// If row was checked with no duplicate keys,
 		// it should be add to values map for the further row check.
 		// There may be duplicate keys inside the insert statement.
-		if rows[i] != nil {
+		if !skip {
 			e.ctx.GetSessionVars().StmtCtx.AddCopiedRows(1)
 			_, err = addRecord(rows[i])
 			if err != nil {

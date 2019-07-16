@@ -680,6 +680,7 @@ func (b *executorBuilder) buildLoadData(v *plannercore.LoadData) Executor {
 			Ctx:          b.ctx,
 		},
 	}
+	loadDataExec.loadDataInfo.SetMaxRowsInBatch(20000)
 
 	return loadDataExec
 }
