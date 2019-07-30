@@ -286,6 +286,9 @@ const (
 
 	// TiDBEnableNoopFuncs set true will enable using fake funcs(like get_lock release_lock)
 	TiDBEnableNoopFuncs = "tidb_enable_noop_functions"
+
+	// TiDBLoadDataSeqProcess set true will make load data process and commit sequentially in one routine
+	TiDBLoadDataSeqProcess = "tidb_load_data_seq_process"
 )
 
 // Default TiDB system variable values.
@@ -350,6 +353,7 @@ const (
 	DefTiDBWaitSplitRegionFinish       = true
 	DefWaitSplitRegionTimeout          = 300 // 300s
 	DefTiDBEnableNoopFuncs             = false
+	DefTiDBLoadDataSeqProcess          = false
 )
 
 // Process global variables.

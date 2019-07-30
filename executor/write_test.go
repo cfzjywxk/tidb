@@ -1845,8 +1845,9 @@ func (s *testSuite4) TestLoadData(c *C) {
 	_, reachLimit, err := ld.InsertData(context.Background(), nil, nil)
 	c.Assert(err, IsNil)
 	c.Assert(reachLimit, IsFalse)
-	err = ld.CheckAndInsertOneBatch()
+	err = ld.CheckAndInsertOneBatch(ld.GetRows(), ld.GetCurBatchCnt())
 	c.Assert(err, IsNil)
+	ld.SetMaxRowsInBatch(20000)
 	r := tk.MustQuery(selectSQL)
 	r.Check(nil)
 
@@ -2096,8 +2097,9 @@ func (s *testSuite4) TestLoadDataIntoPartitionedTable(c *C) {
 
 	_, _, err := ld.InsertData(context.Background(), nil, []byte("1,2\n3,4\n5,6\n7,8\n9,10\n"))
 	c.Assert(err, IsNil)
-	err = ld.CheckAndInsertOneBatch()
+	err = ld.CheckAndInsertOneBatch(ld.GetRows(), ld.GetCurBatchCnt())
 	c.Assert(err, IsNil)
+	ld.SetMaxRowsInBatch(20000)
 	ld.SetMessage()
 	err = ctx.StmtCommit()
 	c.Assert(err, IsNil)
@@ -2530,4 +2532,29 @@ func (s *testSuite4) TestSetWithCurrentTimestampAndNow(c *C) {
 	tk.MustQuery("select c1 = c3 from t1").Check(testkit.Rows("1"))
 	tk.MustExec(`insert into t1 set c1 = current_timestamp, c2 = sleep(1);`)
 	tk.MustQuery("select c1 = c3 from t1").Check(testkit.Rows("1", "1"))
+}
+
+func (s *testSuite4) TestLoadDataWorkingModes(c *C) {
+	var err error
+	tk := testkit.NewTestKit(c, s.store)
+	tk.MustExec("use test")
+	createSQL := `drop table if exists load_data_test;
+		create table load_data_test (id int PRIMARY KEY AUTO_INCREMENT, c1 int, c2 varchar(255) default "def", c3 int);`
+	tk.MustExec(createSQL)
+	_, err = tk.Exec("load data local infile '/tmp/nonexistence.csv' replace into table load_data_test")
+	c.Assert(err, NotNil)
+	tk.MustExec("load data local infile '/tmp/nonexistence.csv' ignore into table load_data_test")
+	ctx := tk.Se.(sessionctx.Context)
+	_, ok := ctx.Value(executor.LoadDataVarKey).(*executor.LoadDataInfo)
+	c.Assert(ok, IsTrue)
+	ctx.SetValue(executor.LoadDataVarKey, nil)
+	tk.MustQuery("select @@tidb_load_data_seq_process").Check(testkit.Rows("0"))
+	tk.MustExec("set @@tidb_load_data_seq_process = 1")
+	tk.MustExec(createSQL)
+	tk.MustExec("load data local infile '/tmp/nonexistence.csv' ignore into table load_data_test")
+	ctx = tk.Se.(sessionctx.Context)
+	_, ok = ctx.Value(executor.LoadDataVarKey).(*executor.LoadDataInfo)
+	c.Assert(ok, IsTrue)
+	ctx.SetValue(executor.LoadDataVarKey, nil)
+	tk.MustQuery("select @@tidb_load_data_seq_process").Check(testkit.Rows("1"))
 }
