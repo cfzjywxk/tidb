@@ -399,6 +399,9 @@ type SessionVars struct {
 
 	// use noop funcs or not
 	EnableNoopFuncs bool
+
+	// load data seqeuntially process or not
+	LoadDataSeqProcess bool
 }
 
 // ConnectionInfo present connection used by audit.
@@ -453,6 +456,7 @@ func NewSessionVars() *SessionVars {
 		WaitSplitRegionTimeout:      DefWaitSplitRegionTimeout,
 		EnableIndexMerge:            false,
 		EnableNoopFuncs:             DefTiDBEnableNoopFuncs,
+		LoadDataSeqProcess:          DefTiDBLoadDataSeqProcess,
 	}
 	vars.Concurrency = Concurrency{
 		IndexLookupConcurrency:     DefIndexLookupConcurrency,
@@ -831,6 +835,8 @@ func (s *SessionVars) SetSystemVar(name string, val string) error {
 		s.EnableIndexMerge = TiDBOptOn(val)
 	case TiDBEnableNoopFuncs:
 		s.EnableNoopFuncs = TiDBOptOn(val)
+	case TiDBLoadDataSeqProcess:
+		s.LoadDataSeqProcess = TiDBOptOn(val)
 	}
 	s.systems[name] = val
 	return nil
