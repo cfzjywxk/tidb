@@ -1042,9 +1042,8 @@ func (cc *clientConn) writeReq(filePath string) error {
 	return cc.flush()
 }
 
-var defaultLoadDataBatchCnt uint64 = 20000
-
-func insertDataWithCommit(ctx context.Context, prevData, curData []byte, loadDataInfo *executor.LoadDataInfo) ([]byte, error) {
+func insertDataWithCommit(ctx context.Context, prevData,
+	curData []byte, loadDataInfo *executor.LoadDataInfo, enqTask bool) ([]byte, error) {
 	var err error
 	var reachLimit bool
 	for {
@@ -1055,22 +1054,115 @@ func insertDataWithCommit(ctx context.Context, prevData, curData []byte, loadDat
 		if !reachLimit {
 			break
 		}
-		err := loadDataInfo.CheckAndInsertOneBatch()
+
+		if enqTask {
+			// push into commit task queue
+			err = loadDataInfo.EnqOneTask(ctx)
+		} else {
+			err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
+		}
 		if err != nil {
-			return nil, err
-		}
-		if err = loadDataInfo.Ctx.StmtCommit(); err != nil {
-			return nil, err
-		}
-		// Make sure that there are no retries when committing.
-		if err = loadDataInfo.Ctx.RefreshTxnCtx(ctx); err != nil {
-			return nil, err
+			return prevData, err
 		}
 		curData = prevData
 		prevData = nil
 	}
 	return prevData, nil
 }
+
+// seqLoadData process batch commit same routine
+func seqLoadData(ctx context.Context, cc *clientConn, loadDataInfo *executor.LoadDataInfo) error {
+	var err error
+	var shouldBreak bool
+	var prevData, curData []byte
+	for {
+		curData, err = cc.readPacket()
+		if err != nil {
+			if terror.ErrorNotEqual(err, io.EOF) {
+				logutil.Logger(ctx).Error("read packet failed", zap.Error(err))
+				break
+			}
+		}
+		if len(curData) == 0 {
+			shouldBreak = true
+			if len(prevData) == 0 {
+				break
+			}
+		}
+		prevData, err = insertDataWithCommit(ctx, prevData, curData, loadDataInfo, false)
+		if err != nil {
+			break
+		}
+		if shouldBreak {
+			break
+		}
+	}
+	if err != nil {
+		loadDataInfo.Ctx.StmtRollback()
+	} else {
+		err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
+	}
+	return err
+}
+
+// processStream process input stream from network
+func processStream(ctx context.Context, cc *clientConn, loadDataInfo *executor.LoadDataInfo) {
+	var err error
+	var shouldBreak bool
+	var prevData, curData []byte
+	defer func() {
+		r := recover()
+		if r != nil {
+			buf := make([]byte, 4096)
+			stackSize := runtime.Stack(buf, false)
+			buf = buf[:stackSize]
+			logutil.Logger(ctx).Error("process routine panicked", zap.String("stack", string(buf)))
+		}
+		if err != nil || r != nil {
+			loadDataInfo.ForceQuitCommit()
+		}
+		loadDataInfo.CloseTaskQueue()
+	}()
+	for {
+		curData, err = cc.readPacket()
+		if err != nil {
+			if terror.ErrorNotEqual(err, io.EOF) {
+				logutil.Logger(ctx).Error("read packet failed", zap.Error(err))
+				break
+			}
+		}
+		if len(curData) == 0 {
+			shouldBreak = true
+			if len(prevData) == 0 {
+				break
+			}
+		}
+		// prepare batch and enqueue task
+		prevData, err = insertDataWithCommit(ctx, prevData, curData, loadDataInfo, true)
+		select {
+		case <-loadDataInfo.QuitProcess:
+			return
+		default:
+		}
+		if err != nil {
+			break
+		}
+		if shouldBreak {
+			break
+		}
+	}
+	if err != nil {
+		logutil.Logger(ctx).Error("load data process error", zap.Error(err))
+	} else {
+		err = loadDataInfo.EnqOneTask(ctx)
+		if err != nil {
+			logutil.Logger(ctx).Error("load data process error", zap.Error(err))
+		}
+	}
+}
+
+// TODO: Make the loadDataRowCnt settable.
+var defaultLoadDataBatchCnt uint64 = 20000
 
 // handleLoadData does the additional work after processing the 'load data' query.
 // It sends client a file path, then reads the file content from client, inserts data into database.
@@ -1088,46 +1180,21 @@ func (cc *clientConn) handleLoadData(ctx context.Context, loadDataInfo *executor
 		return err
 	}
 
-	var shouldBreak bool
-	var prevData, curData []byte
-	// TODO: Make the loadDataRowCnt settable.
+	loadDataInfo.InitQueues()
 	loadDataInfo.SetMaxRowsInBatch(defaultLoadDataBatchCnt)
 	err = loadDataInfo.Ctx.NewTxn(ctx)
 	if err != nil {
 		return err
 	}
-	for {
-		curData, err = cc.readPacket()
-		if err != nil {
-			if terror.ErrorNotEqual(err, io.EOF) {
-				logutil.Logger(ctx).Error("read packet failed", zap.Error(err))
-				break
-			}
-		}
-		if len(curData) == 0 {
-			shouldBreak = true
-			if len(prevData) == 0 {
-				break
-			}
-		}
-		prevData, err = insertDataWithCommit(ctx, prevData, curData, loadDataInfo)
-		if err != nil {
-			break
-		}
-		if shouldBreak {
-			break
-		}
+	seqProcess := loadDataInfo.Ctx.GetSessionVars().LoadDataSeqProcess
+	if !seqProcess {
+		// processStream process input data, enqueue commit task
+		go processStream(ctx, cc, loadDataInfo)
+		err = loadDataInfo.CommitWork(ctx)
+	} else {
+		err = seqLoadData(ctx, cc, loadDataInfo)
 	}
 	loadDataInfo.SetMessage()
-
-	if err != nil {
-		loadDataInfo.Ctx.StmtRollback()
-	} else {
-		err = loadDataInfo.CheckAndInsertOneBatch()
-		if err == nil {
-			err = loadDataInfo.Ctx.StmtCommit()
-		}
-	}
 
 	var txn kv.Transaction
 	var err1 error
