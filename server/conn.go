@@ -259,6 +259,40 @@ func (cc *clientConn) writeInitialHandshake() error {
 	return cc.flush()
 }
 
+func (cc *clientConn) ReadFromStream() ([]byte, error) {
+	return cc.readPacket()
+}
+
+func (cc *clientConn) ReqData(filePath string) error {
+	return cc.writeReq(filePath)
+}
+
+func (cc *clientConn) LoadPreCheck() error {
+	if cc.capability&mysql.ClientLocalFiles == 0 {
+		return errNotAllowedCommand
+	}
+	return nil
+}
+
+func (cc *clientConn) TxnOp(ctx context.Context, loadDataInfo *executor.LoadDataInfo, err error) error {
+	var txn kv.Transaction
+	var err1 error
+	txn, err1 = loadDataInfo.Ctx.Txn(true)
+	if err1 == nil {
+		if txn != nil && txn.Valid() {
+			if err != nil {
+				if err1 := txn.Rollback(); err1 != nil {
+					logutil.Logger(ctx).Error("load data rollback failed", zap.Error(err1))
+				}
+				return err
+			}
+			return cc.ctx.CommitTxn(sessionctx.SetCommitCtx(ctx, loadDataInfo.Ctx))
+		}
+	}
+	// Should never reach here.
+	panic(err1)
+}
+
 func (cc *clientConn) readPacket() ([]byte, error) {
 	return cc.pkt.readPacket()
 }
@@ -1183,6 +1217,7 @@ func (cc *clientConn) handleLoadStats(ctx context.Context, loadStatsInfo *execut
 // There is a special query `load data` that does not return result, which is handled differently.
 // Query `load stats` does not return result either.
 func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
+	cc.ctx.SetValue(executor.LoadDataInput, cc)
 	rs, err := cc.ctx.Execute(ctx, sql)
 	if err != nil {
 		metrics.ExecuteErrorCounter.WithLabelValues(metrics.ExecuteErrorToLabel(err)).Inc()
@@ -1200,6 +1235,7 @@ func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
 			err = cc.writeMultiResultset(ctx, rs, false)
 		}
 	} else {
+		/*
 		loadDataInfo := cc.ctx.Value(executor.LoadDataVarKey)
 		if loadDataInfo != nil {
 			defer cc.ctx.SetValue(executor.LoadDataVarKey, nil)
@@ -1207,6 +1243,7 @@ func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
 				return err
 			}
 		}
+		*/
 
 		loadStats := cc.ctx.Value(executor.LoadStatsVarKey)
 		if loadStats != nil {

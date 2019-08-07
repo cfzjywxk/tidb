@@ -17,6 +17,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/pingcap/parser/terror"
+	"io"
 	"strings"
 
 	"github.com/pingcap/errors"
@@ -35,6 +37,13 @@ import (
 var (
 	null = []byte("NULL")
 )
+
+type DataStream interface {
+	LoadPreCheck() error
+	ReadFromStream() ([]byte, error)
+	ReqData(filePath string) error
+	TxnOp(ctx context.Context, loadDataInfo *LoadDataInfo, err error) error
+}
 
 // LoadDataExec represents a load data executor.
 type LoadDataExec struct {
@@ -60,6 +69,7 @@ func NewLoadDataInfo(ctx sessionctx.Context, row []types.Datum, tbl table.Table,
 
 // Next implements the Executor Next interface.
 func (e *LoadDataExec) Next(ctx context.Context, req *chunk.Chunk) error {
+	var err error
 	req.GrowAndReset(e.maxChunkSize)
 	// TODO: support load data without local field.
 	if !e.IsLocal {
@@ -74,18 +84,11 @@ func (e *LoadDataExec) Next(ctx context.Context, req *chunk.Chunk) error {
 		return errors.New("Load Data: don't support load data terminated is nil")
 	}
 
-	sctx := e.loadDataInfo.ctx
-	val := sctx.Value(LoadDataVarKey)
-	if val != nil {
-		sctx.SetValue(LoadDataVarKey, nil)
-		return errors.New("Load Data: previous load data option isn't closed normal")
-	}
 	if e.loadDataInfo.Path == "" {
 		return errors.New("Load Data: infile path is empty")
 	}
-	sctx.SetValue(LoadDataVarKey, e.loadDataInfo)
-
-	return nil
+	err = e.DoCmd(ctx)
+	return err
 }
 
 // Close implements the Executor Close interface.
@@ -99,6 +102,72 @@ func (e *LoadDataExec) Open(ctx context.Context) error {
 		e.loadDataInfo.initEvalBuffer()
 	}
 	return nil
+}
+
+// DoCmd do the load data work
+func (e *LoadDataExec) DoCmd(ctx context.Context) error {
+	var err error
+	// If the server handles the load data request, the client has to set the ClientLocalFiles capability.
+	if e.loadDataInfo == nil {
+		return errors.New("load data info is empty")
+	}
+	loadDataInfo := e.loadDataInfo
+	input, ok := loadDataInfo.Ctx.Value(LoadDataInput).(DataStream)
+	if !ok {
+		return errors.New("load data DataStream input is nil")
+	}
+	err = input.ReqData(loadDataInfo.Path)
+	if err != nil {
+		return err
+	}
+
+	var shouldBreak bool
+	var prevData, curData []byte
+	// TODO: Make the loadDataRowCnt settable.
+	var defaultLoadDataBatchCnt uint64 = 20000
+	loadDataInfo.SetMaxRowsInBatch(defaultLoadDataBatchCnt)
+	err = loadDataInfo.Ctx.NewTxn(ctx)
+	if err != nil {
+		return err
+	}
+	for {
+		curData, err = input.ReadFromStream()
+		if err != nil {
+			if terror.ErrorNotEqual(err, io.EOF) {
+				logutil.Logger(ctx).Error("input failed", zap.Error(err))
+				break
+			}
+		}
+		if len(curData) == 0 {
+			shouldBreak = true
+			if len(prevData) == 0 {
+				break
+			}
+		}
+		prevData, err = loadDataInfo.insertDataWithCommit(ctx, prevData, curData)
+		if err != nil {
+			break
+		}
+		if shouldBreak {
+			break
+		}
+	}
+	loadDataInfo.SetMessage()
+
+	if err != nil {
+		loadDataInfo.Ctx.StmtRollback()
+	} else {
+		err = loadDataInfo.CheckAndInsertOneBatch()
+		if err == nil {
+			err = loadDataInfo.Ctx.StmtCommit()
+		}
+	}
+
+	err1 := input.TxnOp(ctx, loadDataInfo, err)
+	if err1 != nil {
+		logutil.Logger(ctx).Error("load data DoCmd Txn failed", zap.Error(err), zap.Error(err1))
+	}
+	return err
 }
 
 // LoadDataInfo saves the information of loading data operation.
@@ -167,6 +236,35 @@ func (e *LoadDataInfo) getValidData(prevData, curData []byte) ([]byte, []byte) {
 	}
 	return nil, curData
 }
+
+func (e *LoadDataInfo) insertDataWithCommit(ctx context.Context, prevData, curData []byte) ([]byte, error) {
+	var err error
+	var reachLimit bool
+	for {
+		prevData, reachLimit, err = e.InsertData(ctx, prevData, curData)
+		if err != nil {
+			return nil, err
+		}
+		if !reachLimit {
+			break
+		}
+		err := e.CheckAndInsertOneBatch()
+		if err != nil {
+			return nil, err
+		}
+		if err = e.Ctx.StmtCommit(); err != nil {
+			return nil, err
+		}
+		// Make sure that there are no retries when committing.
+		if err = e.Ctx.RefreshTxnCtx(ctx); err != nil {
+			return nil, err
+		}
+		curData = prevData
+		prevData = nil
+	}
+	return prevData, nil
+}
+
 
 // getLine returns a line, curData, the next data start index and a bool value.
 // If it has starting symbol the bool is true, otherwise is false.
@@ -570,3 +668,4 @@ func (k loadDataVarKeyType) String() string {
 
 // LoadDataVarKey is a variable key for load data.
 const LoadDataVarKey loadDataVarKeyType = 0
+const LoadDataInput loadDataVarKeyType = 1
