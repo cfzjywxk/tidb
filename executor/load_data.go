@@ -139,6 +139,17 @@ type LoadDataInfo struct {
 	queryStart        int64
 	queryEnd          int64
 	readPacketTimes   int64
+
+	batchCheckCost    int64
+	StmtCommitCost    int64
+}
+
+func (e *LoadDataInfo) AddBatchCheckCost(diff int64) {
+	e.batchCheckCost += diff
+}
+
+func (e *LoadDataInfo) AddStmtCommitCost(diff int64) {
+	e.StmtCommitCost += diff
 }
 
 func (e *LoadDataInfo) IncReadPacketTimes() {
@@ -265,16 +276,27 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 
 	// debug code
 	e.UpdateCommitStartTime()
+	startT := time.Now().UnixNano() / int64(time.Microsecond)
 
 	err = e.CheckAndInsertOneBatch(ctx, task.rows, task.cnt)
 	if err != nil {
 		logutil.Logger(ctx).Error("commit error CheckAndInsert", zap.Error(err))
 		return err
 	}
+
+	// debug code
+	t2 := time.Now().UnixNano() / int64(time.Microsecond)
+	e.AddBatchCheckCost(t2 - startT)
+
 	if err = e.Ctx.StmtCommit(); err != nil {
 		logutil.Logger(ctx).Error("commit error commit", zap.Error(err))
 		return err
 	}
+
+	// debug code
+	t3 := time.Now().UnixNano() / int64(time.Microsecond)
+	e.AddBatchCheckCost(t3)
+
 	// Make sure that there are no retries when committing.
 	if err = e.Ctx.RefreshTxnCtx(ctx); err != nil {
 		logutil.Logger(ctx).Error("commit error refresh", zap.Error(err))
