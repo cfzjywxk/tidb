@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time" // for debug
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/ast"
@@ -179,7 +180,7 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 				return err
 			}
 		}
-		logutil.Logger(ctx).Debug("one task enqueued ", zap.Int("current queue len", len(e.commitTaskQueue)))
+		logutil.Logger(ctx).Info("one task enqueued ", zap.Int("current queue len", len(e.commitTaskQueue)))
 		// reset rows buffer, will reallocate buffer but NOT reuse
 		e.SetMaxRowsInBatch(e.maxRowsInBatch)
 	}
@@ -189,6 +190,7 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 // CommitOneTask insert Data from LoadDataInfo.rows, then make commit and refresh txn
 func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, resetBuf bool) error {
 	var err error
+	startTime := time.Now().UnixNano() / int64(time.Microsecond)
 	err = e.CheckAndInsertOneBatch(ctx, task.rows, task.cnt)
 	if err != nil {
 		logutil.Logger(ctx).Error("commit error CheckAndInsert", zap.Error(err))
@@ -206,6 +208,13 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 	// this only set in sequential mode, e.rows buffer will be reused in sequential mode
 	if resetBuf {
 		e.curBatchCnt = 0
+	}
+	endTime := time.Now().UnixNano() / int64(time.Microsecond)
+	{
+		diff := endTime - startTime;
+		logutil.Logger(ctx).Info("commit one batch succ finished",
+			zap.Uint64("batchSize", task.cnt),
+			zap.Int64("time diff microseconds", diff))
 	}
 	return err
 }
@@ -240,7 +249,7 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 					break
 				}
 				tasks++
-				logutil.Logger(ctx).Debug("commit one task finished",
+				logutil.Logger(ctx).Info("commit one task finished",
 					zap.Uint64("finished tasks count", tasks),
 					zap.Int("pending tasks count", len(e.commitTaskQueue)))
 			} else {
