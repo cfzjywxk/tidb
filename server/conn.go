@@ -1169,8 +1169,10 @@ func processStream(ctx context.Context, cc *clientConn, loadDataInfo *executor.L
 	} else {
 
 		// debug code
-		loadDataInfo.UpdatePrepareFinishTime()
-		loadDataInfo.CalcCost(ctx, 0)
+		if loadDataInfo.GetCurBatchCnt() > 0 {
+			loadDataInfo.UpdatePrepareFinishTime()
+			loadDataInfo.CalcCost(ctx, 0)
+		}
 
 		err = loadDataInfo.EnqOneTask(ctx)
 		if err != nil {
