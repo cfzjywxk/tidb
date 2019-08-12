@@ -1181,7 +1181,7 @@ func (cc *clientConn) handleLoadData(ctx context.Context, loadDataInfo *executor
 	}
 
 	loadDataInfo.InitQueues()
-	loadDataInfo.SetMaxRowsInBatch(defaultLoadDataBatchCnt)
+	loadDataInfo.SetMaxRowsInBatch(uint64(loadDataInfo.Ctx.GetSessionVars().DMLBatchSize))
 	err = loadDataInfo.Ctx.NewTxn(ctx)
 	if err != nil {
 		return err
