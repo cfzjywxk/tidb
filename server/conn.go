@@ -1084,6 +1084,7 @@ func seqLoadData(ctx context.Context, cc *clientConn, loadDataInfo *executor.Loa
 	var prevData, curData []byte
 	for {
 		curData, err = cc.readPacket()
+		loadDataInfo.IncReadPacketTimes()
 		if err != nil {
 			if terror.ErrorNotEqual(err, io.EOF) {
 				logutil.Logger(ctx).Error("read packet failed", zap.Error(err))
@@ -1142,6 +1143,7 @@ func processStream(ctx context.Context, cc *clientConn, loadDataInfo *executor.L
 	}()
 	for {
 		curData, err = cc.readPacket()
+		loadDataInfo.IncReadPacketTimes()
 		if err != nil {
 			if terror.ErrorNotEqual(err, io.EOF) {
 				logutil.Logger(ctx).Error("read packet failed", zap.Error(err))

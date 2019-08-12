@@ -138,6 +138,11 @@ type LoadDataInfo struct {
 	commitCost        int64
 	queryStart        int64
 	queryEnd          int64
+	readPacketTimes   int64
+}
+
+func (e *LoadDataInfo) IncReadPacketTimes() {
+	e.readPacketTimes++
 }
 
 func (e *LoadDataInfo) UpdateQueryStart() {
@@ -181,9 +186,11 @@ func (e *LoadDataInfo) CalcCost(ctx context.Context, costType int) {
 func (e *LoadDataInfo) Summarize(ctx context.Context) {
 	logutil.Logger(ctx).Info("===BEGIN===")
 	logutil.Logger(ctx).Info("query ",
+		zap.Bool("is seq", e.ctx.GetSessionVars().LoadDataSeqProcess),
 		zap.Int64("query start", e.queryStart),
 		zap.Int64("query end", e.queryEnd),
 		zap.Int64("query total cost", e.queryEnd - e.queryStart))
+	logutil.Logger(ctx).Info("read packet times", zap.Int64("read packet", e.readPacketTimes))
 	logutil.Logger(ctx).Info("prepare", zap.Int64("prepare times", e.PTimes),
 		zap.Int64("prepare cost", e.prepareCost),
 		zap.Float64("avg prepare cost", float64(e.prepareCost) / float64(e.PTimes)))
