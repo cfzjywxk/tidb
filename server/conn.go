@@ -1109,10 +1109,14 @@ func seqLoadData(ctx context.Context, cc *clientConn, loadDataInfo *executor.Loa
 	} else {
 
 		// debug code
-		loadDataInfo.UpdatePrepareFinishTime()
-		loadDataInfo.CalcCost(ctx, 0)
+		if loadDataInfo.GetCurBatchCnt() > 0 {
+			loadDataInfo.UpdatePrepareFinishTime()
+			loadDataInfo.CalcCost(ctx, 0)
+		}
 
-		err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
+		if loadDataInfo.GetCurBatchCnt() > 0 {
+			err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
+		}
 	}
 	return err
 }
