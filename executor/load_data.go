@@ -126,6 +126,71 @@ type LoadDataInfo struct {
 	commitTaskQueue chan CommitTask
 	QuitCommit      chan struct{}
 	QuitProcess     chan struct{}
+
+	// debug code
+	prepareStartTime  int64
+	prepareFinishTime int64
+	PTimes            int64
+	commitStartTime   int64
+	commitFinishTime  int64
+	CTimes            int64
+	prepareCost       int64
+	commitCost        int64
+	queryStart        int64
+	queryEnd          int64
+}
+
+func (e *LoadDataInfo) UpdateQueryStart() {
+	e.queryStart = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) UpdateQueryEnd() {
+	e.queryEnd = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) UpdatePrepareStartTime() {
+	e.prepareStartTime = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) UpdatePrepareFinishTime() {
+	e.prepareFinishTime = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) UpdateCommitStartTime() {
+	e.commitStartTime = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) UpdateCommitFinishTime() {
+	e.commitFinishTime = time.Now().UnixNano() / int64(time.Microsecond)
+}
+
+func (e *LoadDataInfo) CalcCost(ctx context.Context, costType int) {
+	if costType == 0 {
+		e.PTimes++
+		diff := e.prepareFinishTime - e.prepareStartTime
+		e.prepareCost += diff
+		logutil.Logger(ctx).Info("this prepare cost", zap.Int64("ptimes", e.PTimes), zap.Int64("prepare time", diff))
+	} else {
+		e.CTimes++
+		diff := e.commitFinishTime - e.commitStartTime
+		e.commitCost += diff
+		logutil.Logger(ctx).Info("this commit cost", zap.Int64("ctimes", e.CTimes), zap.Int64("commit time", diff))
+	}
+}
+
+func (e *LoadDataInfo) Summarize(ctx context.Context) {
+	logutil.Logger(ctx).Info("===BEGIN===")
+	logutil.Logger(ctx).Info("query ",
+		zap.Int64("query start", e.queryStart),
+		zap.Int64("query end", e.queryEnd),
+		zap.Int64("query total cost", e.queryEnd - e.queryStart))
+	logutil.Logger(ctx).Info("prepare", zap.Int64("prepare times", e.PTimes),
+		zap.Int64("prepare cost", e.prepareCost),
+		zap.Float64("avg prepare cost", float64(e.prepareCost) / float64(e.PTimes)))
+	logutil.Logger(ctx).Info("commit", zap.Int64("commit times", e.CTimes),
+		zap.Int64("commit cost", e.commitCost),
+		zap.Float64("avg commit cost", float64(e.commitCost) / float64(e.CTimes)))
+	logutil.Logger(ctx).Info("===END===")
 }
 
 // GetRows getter for rows
@@ -190,7 +255,10 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 // CommitOneTask insert Data from LoadDataInfo.rows, then make commit and refresh txn
 func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, resetBuf bool) error {
 	var err error
-	startTime := time.Now().UnixNano() / int64(time.Microsecond)
+
+	// debug code
+	e.UpdateCommitStartTime()
+
 	err = e.CheckAndInsertOneBatch(ctx, task.rows, task.cnt)
 	if err != nil {
 		logutil.Logger(ctx).Error("commit error CheckAndInsert", zap.Error(err))
@@ -209,13 +277,11 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 	if resetBuf {
 		e.curBatchCnt = 0
 	}
-	endTime := time.Now().UnixNano() / int64(time.Microsecond)
-	{
-		diff := endTime - startTime;
-		logutil.Logger(ctx).Info("commit one batch succ finished",
-			zap.Uint64("batchSize", task.cnt),
-			zap.Int64("time diff microseconds", diff))
-	}
+
+	// debug code
+	e.UpdateCommitFinishTime()
+	e.CalcCost(ctx, 1)
+
 	return err
 }
 

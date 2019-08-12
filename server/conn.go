@@ -1054,12 +1054,20 @@ func insertDataWithCommit(ctx context.Context, prevData,
 		if !reachLimit {
 			break
 		}
+		// debug code
+		loadDataInfo.UpdatePrepareFinishTime()
+		loadDataInfo.CalcCost(ctx, 0)
+
 		if enqTask {
 			// push into commit task queue
 			err = loadDataInfo.EnqOneTask(ctx)
 		} else {
 			err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
 		}
+
+		// debug code
+		loadDataInfo.UpdatePrepareStartTime()
+
 		if err != nil {
 			return prevData, err
 		}
@@ -1099,6 +1107,11 @@ func seqLoadData(ctx context.Context, cc *clientConn, loadDataInfo *executor.Loa
 	if err != nil {
 		loadDataInfo.Ctx.StmtRollback()
 	} else {
+
+		// debug code
+		loadDataInfo.UpdatePrepareFinishTime()
+		loadDataInfo.CalcCost(ctx, 0)
+
 		err = loadDataInfo.CommitOneTask(ctx, loadDataInfo.MakeCommitTask(), true)
 	}
 	return err
@@ -1154,6 +1167,11 @@ func processStream(ctx context.Context, cc *clientConn, loadDataInfo *executor.L
 	if err != nil {
 		logutil.Logger(ctx).Error("load data process error", zap.Error(err))
 	} else {
+
+		// debug code
+		loadDataInfo.UpdatePrepareFinishTime()
+		loadDataInfo.CalcCost(ctx, 0)
+
 		err = loadDataInfo.EnqOneTask(ctx)
 		if err != nil {
 			logutil.Logger(ctx).Error("load data process stream error", zap.Error(err))
@@ -1187,6 +1205,11 @@ func (cc *clientConn) handleLoadData(ctx context.Context, loadDataInfo *executor
 		return err
 	}
 	seqProcess := loadDataInfo.Ctx.GetSessionVars().LoadDataSeqProcess
+
+	// debug code
+	loadDataInfo.UpdateQueryStart()
+	loadDataInfo.UpdatePrepareStartTime()
+
 	if !seqProcess {
 		// processStream process input data, enqueue commit task
 		go processStream(ctx, cc, loadDataInfo)
@@ -1195,6 +1218,10 @@ func (cc *clientConn) handleLoadData(ctx context.Context, loadDataInfo *executor
 		err = seqLoadData(ctx, cc, loadDataInfo)
 	}
 	loadDataInfo.SetMessage()
+
+	// debug code
+	loadDataInfo.UpdateQueryEnd()
+	loadDataInfo.Summarize(ctx)
 
 	var txn kv.Transaction
 	var err1 error
