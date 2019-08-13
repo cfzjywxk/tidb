@@ -1158,8 +1158,12 @@ func processStream(ctx context.Context, cc *clientConn, loadDataInfo *executor.L
 		}
 		select {
 		case <-loadDataInfo.QuitProcess:
-			return
+			err = errors.New("QuitProcess forced to quit")
+			break
 		default:
+		}
+		if err != nil {
+			break
 		}
 		// prepare batch and enqueue task
 		prevData, err = insertDataWithCommit(ctx, prevData, curData, loadDataInfo, true)
