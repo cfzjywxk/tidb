@@ -208,6 +208,12 @@ func (e *LoadDataInfo) Summarize(ctx context.Context) {
 	logutil.Logger(ctx).Info("commit", zap.Int64("commit times", e.CTimes),
 		zap.Int64("commit cost", e.commitCost),
 		zap.Float64("avg commit cost", float64(e.commitCost) / float64(e.CTimes)))
+	logutil.Logger(ctx).Info("--batchCheckAndInsert",
+		zap.Int64("time", e.batchCheckCost),
+		zap.Float64("--batchCheckAndInsert avg", float64(e.batchCheckCost) / float64(e.CTimes)))
+	logutil.Logger(ctx).Info("--stmtCommit",
+		zap.Int64("time", e.StmtCommitCost),
+		zap.Float64("--stmtCommit avg", float64(e.StmtCommitCost) / float64(e.CTimes)))
 	logutil.Logger(ctx).Info("===END===")
 }
 
@@ -276,7 +282,7 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 
 	// debug code
 	e.UpdateCommitStartTime()
-	startT := time.Now().UnixNano() / int64(time.Microsecond)
+	t1 := time.Now().UnixNano() / int64(time.Microsecond)
 
 	err = e.CheckAndInsertOneBatch(ctx, task.rows, task.cnt)
 	if err != nil {
@@ -286,7 +292,7 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 
 	// debug code
 	t2 := time.Now().UnixNano() / int64(time.Microsecond)
-	e.AddBatchCheckCost(t2 - startT)
+	e.AddBatchCheckCost(t2 - t1)
 
 	if err = e.Ctx.StmtCommit(); err != nil {
 		logutil.Logger(ctx).Error("commit error commit", zap.Error(err))
@@ -295,7 +301,7 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 
 	// debug code
 	t3 := time.Now().UnixNano() / int64(time.Microsecond)
-	e.AddBatchCheckCost(t3)
+	e.AddStmtCommitCost(t3 - t2)
 
 	// Make sure that there are no retries when committing.
 	if err = e.Ctx.RefreshTxnCtx(ctx); err != nil {
