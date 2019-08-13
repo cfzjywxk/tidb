@@ -142,6 +142,7 @@ type LoadDataInfo struct {
 
 	batchCheckCost    int64
 	StmtCommitCost    int64
+	refreshCost       int64
 }
 
 func (e *LoadDataInfo) AddBatchCheckCost(diff int64) {
@@ -150,6 +151,10 @@ func (e *LoadDataInfo) AddBatchCheckCost(diff int64) {
 
 func (e *LoadDataInfo) AddStmtCommitCost(diff int64) {
 	e.StmtCommitCost += diff
+}
+
+func (e *LoadDataInfo) AddRefreshCost(diff int64) {
+	e.refreshCost += diff
 }
 
 func (e *LoadDataInfo) IncReadPacketTimes() {
@@ -214,6 +219,9 @@ func (e *LoadDataInfo) Summarize(ctx context.Context) {
 	logutil.Logger(ctx).Info("--stmtCommit",
 		zap.Int64("time", e.StmtCommitCost),
 		zap.Float64("--stmtCommit avg", float64(e.StmtCommitCost) / float64(e.CTimes)))
+	logutil.Logger(ctx).Info("--refreshTxn",
+		zap.Int64("time", e.refreshCost),
+		zap.Float64("--refreshTxn avg", float64(e.refreshCost) / float64(e.CTimes)))
 	logutil.Logger(ctx).Info("===END===")
 }
 
@@ -312,6 +320,9 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 	if resetBuf {
 		e.curBatchCnt = 0
 	}
+
+	t4 := time.Now().UnixNano() / int64(time.Microsecond)
+	e.AddRefreshCost(t4 - t3)
 
 	// debug code
 	e.UpdateCommitFinishTime()
