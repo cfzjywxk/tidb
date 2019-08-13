@@ -334,6 +334,7 @@ func (e *LoadDataInfo) CommitOneTask(ctx context.Context, task CommitTask, reset
 // CommitWork commit batch sequentially
 func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 	var err error
+	var forcedQuit = false
 	defer func() {
 		r := recover()
 		if r != nil {
@@ -344,6 +345,14 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 		}
 		if err != nil || r != nil {
 			e.ForceQuitProcess()
+			// if err is commit error not process routine error,
+			// wait for the process routine to quit, then return err process next sql request
+			if !forcedQuit {
+				select {
+				case <-e.QuitCommit:
+					break
+				}
+			}
 		}
 	}()
 	var tasks uint64 = 0
@@ -352,6 +361,7 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 		select {
 		case <-e.QuitCommit:
 			err = errors.New("commit forced to quit")
+			forcedQuit = true
 			logutil.Logger(ctx).Error("commit forced to quit, possible preparation failed")
 			break
 		case commitTask, ok := <-e.commitTaskQueue:
