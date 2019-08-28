@@ -15,6 +15,7 @@
 package tikv
 
 import (
+	"container/heap"
 	"context"
 	"math"
 	"sync"
@@ -347,10 +348,22 @@ type batchCommandsEntry struct {
 	// canceled indicated the request is canceled or not.
 	canceled int32
 	err      error
+
+	// timeout
+	timeoutStamp time.Time
+	enqueued     int32
 }
 
 func (b *batchCommandsEntry) isCanceled() bool {
 	return atomic.LoadInt32(&b.canceled) == 1
+}
+
+func (b *batchCommandsEntry) isEnqueued() bool {
+	return atomic.LoadInt32(&b.enqueued) == 1
+}
+
+func (b *batchCommandsEntry) setEnqueued() {
+	atomic.StoreInt32(&b.enqueued, 1)
 }
 
 const idleTimeout = 3 * time.Minute
@@ -473,10 +486,69 @@ func removeCanceledRequests(entries []*batchCommandsEntry,
 	return validEntries, validRequets
 }
 
+// An IntHeap is a min-heap of ints.
+type reqHeap []*batchCommandsEntry
+
+func (h reqHeap) Len() int           { return len(h) }
+func (h reqHeap) Less(i, j int) bool { return h[i].timeoutStamp.Before(h[j].timeoutStamp) }
+func (h reqHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *reqHeap) Push(x interface{}) {
+	// Push and Pop use pointer receivers because they modify the slice's length,
+	// not just its contents.
+	*h = append(*h, x.(*batchCommandsEntry))
+}
+
+func (h *reqHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+var taskQueueSize = 100000
+var taskQueueCh = make(chan *batchCommandsEntry, taskQueueSize)
+
+func reqProcessLoop(batchConn *batchConn) {
+	h := &reqHeap{}
+	heap.Init(h)
+	for {
+		req := <- taskQueueCh
+		h.Push(req)
+		procReq := h.Pop().(*batchCommandsEntry)
+		finished := false
+		timeouted := false
+		if len(procReq.res) > 0 {
+			finished = true
+		}
+		if time.Now().After(procReq.timeoutStamp) {
+			timeouted = true
+		}
+		if timeouted {
+			if !finished {
+				atomic.StoreInt32(&req.canceled, 1)
+				req.res <- &tikvpb.BatchCommandsResponse_Response{}
+			}
+		} else {
+			if !finished {
+				if !procReq.isEnqueued() {
+					select {
+					case batchConn.batchCommandsCh <- procReq:
+						procReq.setEnqueued()
+					default:
+					}
+				}
+				h.Push(procReq)
+			}
+		}
+	}
+}
+
 func sendBatchRequest(
 	ctx context.Context,
-	addr string,
-	batchConn *batchConn,
+	_ string,
+	_ *batchConn,
 	req *tikvpb.BatchCommandsRequest_Request,
 	timeout time.Duration,
 ) (*tikvrpc.Response, error) {
@@ -486,7 +558,18 @@ func sendBatchRequest(
 		res:      make(chan *tikvpb.BatchCommandsResponse_Response, 1),
 		canceled: 0,
 		err:      nil,
+		timeoutStamp: time.Now().Add(timeout),
 	}
+	taskQueueCh <- entry
+	res, ok := <-entry.res
+	if !ok {
+		return nil, errors.Trace(entry.err)
+	}
+	if entry.isCanceled() {
+		return nil, errors.Errorf("timeout")
+	}
+	return tikvrpc.FromBatchCommandsResponse(res), nil
+	/*
 	ctx1, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	select {
@@ -509,6 +592,7 @@ func sendBatchRequest(
 			zap.String("to", addr), zap.String("cause", ctx1.Err().Error()))
 		return nil, errors.Trace(ctx1.Err())
 	}
+	*/
 }
 
 func (c *rpcClient) recycleIdleConnArray() {

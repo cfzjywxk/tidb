@@ -169,6 +169,7 @@ func (a *connArray) Init(addr string, security config.Security, idleNotify *uint
 	go tikvrpc.CheckStreamTimeoutLoop(a.streamTimeout, done)
 	if allowBatch {
 		go a.batchSendLoop(cfg.TiKVClient)
+		go reqProcessLoop(a.batchConn)
 	}
 
 	return nil
