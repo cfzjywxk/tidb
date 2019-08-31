@@ -1160,9 +1160,38 @@ func (s *session) PrepareStmt(sql string) (stmtID uint32, paramCount int, fields
 
 // ExecutePreparedStmt executes a prepared statement.
 func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args []types.Datum) (sqlexec.RecordSet, error) {
-	s.PrepareTxnCtx(ctx)
+	var err error
 	s.sessionVars.StartTime = time.Now()
-	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args)
+	prepared, ok := s.sessionVars.PreparedStmts[stmtID]
+	if !ok {
+		err = errors.Errorf("prepared ast not found for stmtID=%d", stmtID)
+		logutil.Logger(ctx).Error("prepared not found", zap.Uint32("stmtID", stmtID))
+		return nil, err
+	}
+	var cachedPlan plannercore.Plan
+	if prepared.UseCache {
+		cacheKey := plannercore.NewPSTMTPlanCacheKey(s.sessionVars, stmtID, prepared.SchemaVersion)
+		if cacheValue, exists := s.PreparedPlanCache().Get(cacheKey); exists {
+			cachedPlan = cacheValue.(*plannercore.PSTMTPlanCacheValue).Plan
+			isPointExec, err := executor.IsPointGetWithPKOrUniqueKeyByAutoCommit(s, cachedPlan)
+			if err != nil {
+				return nil, err
+			}
+			if isPointExec {
+				is := executor.GetInfoSchema(s)
+				stmt := &executor.ExecStmt{
+					InfoSchema:  is,
+					Plan:        cachedPlan,
+					StmtNode:    prepared.Stmt,
+					Ctx:         s,
+					OutputNames: cachedPlan.OutputNames(),
+				}
+				return stmt.GetPointRecord(is, ctx, s, cachedPlan)
+			}
+		}
+	}
+	s.PrepareTxnCtx(ctx)
+	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args, cachedPlan)
 	if err != nil {
 		return nil, err
 	}

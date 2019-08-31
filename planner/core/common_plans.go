@@ -244,27 +244,7 @@ func (e *Execute) OptimizePreparedPlan(ctx context.Context, sctx sessionctx.Cont
 }
 
 func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, is infoschema.InfoSchema, prepared *ast.Prepared) error {
-	var cacheKey kvcache.Key
 	sessionVars := sctx.GetSessionVars()
-	sessionVars.StmtCtx.UseCache = prepared.UseCache
-	if prepared.UseCache {
-		cacheKey = NewPSTMTPlanCacheKey(sessionVars, e.ExecID, prepared.SchemaVersion)
-		if cacheValue, exists := sctx.PreparedPlanCache().Get(cacheKey); exists {
-			if metrics.ResettablePlanCacheCounterFortTest {
-				metrics.PlanCacheCounter.WithLabelValues("prepare").Inc()
-			} else {
-				planCacheCounter.Inc()
-			}
-			plan := cacheValue.(*PSTMTPlanCacheValue).Plan
-			err := e.rebuildRange(plan)
-			if err != nil {
-				return err
-			}
-			e.names = cacheValue.(*PSTMTPlanCacheValue).OutPutNames
-			e.Plan = plan
-			return nil
-		}
-	}
 	p, err := OptimizeAstNode(ctx, sctx, prepared.Stmt, is)
 	if err != nil {
 		return err
@@ -273,6 +253,8 @@ func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, 
 	e.Plan = p
 	_, isTableDual := p.(*PhysicalTableDual)
 	if !isTableDual && prepared.UseCache {
+		var cacheKey kvcache.Key
+		cacheKey = NewPSTMTPlanCacheKey(sessionVars, e.ExecID, prepared.SchemaVersion)
 		sctx.PreparedPlanCache().Put(cacheKey, NewPSTMTPlanCacheValue(p, p.OutputNames()))
 	}
 	return err
