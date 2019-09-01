@@ -1160,10 +1160,16 @@ func (s *session) PrepareStmt(sql string) (stmtID uint32, paramCount int, fields
 }
 
 // PointExec short path for cached point plan execution
-func (s *session) PointExec(ctx context.Context, stmtID uint32,
-	prepared *ast.Prepared, cachedValue *plannercore.PSTMTPlanCacheValue) (sqlexec.RecordSet, error) {
+func (s *session) PointExec(ctx context.Context,
+	stmtID uint32, prepared *ast.Prepared,
+	cachedValue *plannercore.PSTMTPlanCacheValue, args []types.Datum) (sqlexec.RecordSet, error) {
 	is := executor.GetInfoSchema(s)
-	execPlan, err := planner.OptimizeExecCached(ctx, s, prepared.Stmt, is, cachedValue)
+	execAst := &ast.ExecuteStmt{ExecID: stmtID}
+	if err := executor.ResetContextOfStmt(s, execAst); err != nil {
+		return nil, err
+	}
+	execAst.BinaryArgs = args
+	execPlan, err := planner.OptimizeExecCached(ctx, s, execAst, is, cachedValue)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,7 +1208,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 			return nil, err
 		}
 		if isPointExec {
-			return s.PointExec(ctx, stmtID, prepared, cachedValue)
+			return s.PointExec(ctx, stmtID, prepared, cachedValue, args)
 		}
 	}
 	s.PrepareTxnCtx(ctx)
