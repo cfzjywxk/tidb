@@ -206,7 +206,7 @@ type ExecStmt struct {
 }
 
 // GetPointRecord short path for point exec directly from plan
-func (a *ExecStmt) GetPointRecord(is infoschema.InfoSchema, ctx context.Context,
+func (a *ExecStmt) GetPointRecord(ctx context.Context, is infoschema.InfoSchema,
 	sctx sessionctx.Context) (*recordSet, error) {
 	var err error
 	var startTs uint64 = math.MaxUint64

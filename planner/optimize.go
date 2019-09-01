@@ -59,6 +59,7 @@ func Optimize(ctx context.Context, sctx sessionctx.Context, node ast.Node, is in
 	return optimize(ctx, sctx, node, is)
 }
 
+// OptimizeExecCached to optimize execute statement with plan cached
 func OptimizeExecCached(ctx context.Context, sctx sessionctx.Context,
 	node ast.Node, is infoschema.InfoSchema,
 	cachedValue *plannercore.PSTMTPlanCacheValue) (plannercore.Plan, error) {
@@ -71,11 +72,10 @@ func OptimizeExecCached(ctx context.Context, sctx sessionctx.Context,
 	if execPlan, ok := p.(*plannercore.Execute); ok {
 		execPlan.CachedValue = cachedValue
 		err = execPlan.OptimizePreparedPlan(ctx, sctx, is)
-		return p, err
-	} else {
-		err = errors.Errorf("invalid execPlan type")
-		return nil, err
+		return execPlan.Plan, err
 	}
+	err = errors.Errorf("invalid execPlan type")
+	return nil, err
 }
 
 func optimize(ctx context.Context, sctx sessionctx.Context, node ast.Node, is infoschema.InfoSchema) (plannercore.Plan, error) {

@@ -33,7 +33,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	driver "github.com/pingcap/tidb/types/parser_driver"
 	"github.com/pingcap/tidb/util/chunk"
-	"github.com/pingcap/tidb/util/kvcache"
 	"github.com/pingcap/tidb/util/ranger"
 )
 
@@ -245,9 +244,6 @@ func (e *Execute) OptimizePreparedPlan(ctx context.Context, sctx sessionctx.Cont
 }
 
 func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, is infoschema.InfoSchema, prepared *ast.Prepared) error {
-	var cacheKey kvcache.Key
-	sessionVars := sctx.GetSessionVars()
-	sessionVars.StmtCtx.UseCache = prepared.UseCache
 	if e.CachedValue != nil {
 		if metrics.ResettablePlanCacheCounterFortTest {
 			metrics.PlanCacheCounter.WithLabelValues("prepare").Inc()
@@ -270,6 +266,7 @@ func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, 
 	e.Plan = p
 	_, isTableDual := p.(*PhysicalTableDual)
 	if !isTableDual && prepared.UseCache {
+		cacheKey := NewPSTMTPlanCacheKey(sctx.GetSessionVars(), e.ExecID, prepared.SchemaVersion)
 		sctx.PreparedPlanCache().Put(cacheKey, NewPSTMTPlanCacheValue(p, p.OutputNames()))
 	}
 	return err

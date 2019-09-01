@@ -1160,7 +1160,7 @@ func (s *session) PrepareStmt(sql string) (stmtID uint32, paramCount int, fields
 }
 
 // PointExec short path for cached point plan execution
-func (s *session) PointExec(stmtID uint32, ctx context.Context,
+func (s *session) PointExec(ctx context.Context, stmtID uint32,
 	prepared *ast.Prepared, cachedValue *plannercore.PSTMTPlanCacheValue) (sqlexec.RecordSet, error) {
 	is := executor.GetInfoSchema(s)
 	execPlan, err := planner.OptimizeExecCached(ctx, s, prepared.Stmt, is, cachedValue)
