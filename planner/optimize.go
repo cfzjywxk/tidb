@@ -15,6 +15,7 @@ package planner
 
 import (
 	"context"
+	"github.com/pingcap/errors"
 	"strings"
 
 	"github.com/pingcap/parser"
@@ -56,6 +57,25 @@ func Optimize(ctx context.Context, sctx sessionctx.Context, node ast.Node, is in
 	}
 	// Reoptimize after restore the original hint.
 	return optimize(ctx, sctx, node, is)
+}
+
+func OptimizeExecCached(ctx context.Context, sctx sessionctx.Context,
+	node ast.Node, is infoschema.InfoSchema,
+	cachedValue *plannercore.PSTMTPlanCacheValue) (plannercore.Plan, error) {
+	var err error
+	builder := plannercore.NewPlanBuilder(sctx, is, nil)
+	p, err := builder.Build(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	if execPlan, ok := p.(*plannercore.Execute); ok {
+		execPlan.CachedValue = cachedValue
+		err = execPlan.OptimizePreparedPlan(ctx, sctx, is)
+		return p, err
+	} else {
+		err = errors.Errorf("invalid execPlan type")
+		return nil, err
+	}
 }
 
 func optimize(ctx context.Context, sctx sessionctx.Context, node ast.Node, is infoschema.InfoSchema) (plannercore.Plan, error) {

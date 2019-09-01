@@ -182,6 +182,7 @@ type Execute struct {
 	Stmt          ast.StmtNode
 	StmtType      string
 	Plan          Plan
+	CachedValue   *PSTMTPlanCacheValue
 }
 
 // OptimizePreparedPlan optimizes the prepared statement.
@@ -247,23 +248,19 @@ func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, 
 	var cacheKey kvcache.Key
 	sessionVars := sctx.GetSessionVars()
 	sessionVars.StmtCtx.UseCache = prepared.UseCache
-	if prepared.UseCache {
-		cacheKey = NewPSTMTPlanCacheKey(sessionVars, e.ExecID, prepared.SchemaVersion)
-		if cacheValue, exists := sctx.PreparedPlanCache().Get(cacheKey); exists {
-			if metrics.ResettablePlanCacheCounterFortTest {
-				metrics.PlanCacheCounter.WithLabelValues("prepare").Inc()
-			} else {
-				planCacheCounter.Inc()
-			}
-			plan := cacheValue.(*PSTMTPlanCacheValue).Plan
-			err := e.rebuildRange(plan)
-			if err != nil {
-				return err
-			}
-			e.names = cacheValue.(*PSTMTPlanCacheValue).OutPutNames
-			e.Plan = plan
-			return nil
+	if e.CachedValue != nil {
+		if metrics.ResettablePlanCacheCounterFortTest {
+			metrics.PlanCacheCounter.WithLabelValues("prepare").Inc()
+		} else {
+			planCacheCounter.Inc()
 		}
+		err := e.rebuildRange(e.CachedValue.Plan)
+		if err != nil {
+			return err
+		}
+		e.names = e.CachedValue.OutPutNames
+		e.Plan = e.CachedValue.Plan
+		return nil
 	}
 	p, err := OptimizeAstNode(ctx, sctx, prepared.Stmt, is)
 	if err != nil {

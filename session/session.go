@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/pingcap/tidb/planner"
 	"net"
 	"strconv"
 	"strings"
@@ -1158,11 +1159,54 @@ func (s *session) PrepareStmt(sql string) (stmtID uint32, paramCount int, fields
 	return prepareExec.ID, prepareExec.ParamCount, prepareExec.Fields, nil
 }
 
+// PointExec short path for cached point plan execution
+func (s *session) PointExec(stmtID uint32, ctx context.Context,
+	prepared *ast.Prepared, cachedValue *plannercore.PSTMTPlanCacheValue) (sqlexec.RecordSet, error) {
+	is := executor.GetInfoSchema(s)
+	execPlan, err := planner.OptimizeExecCached(ctx, s, prepared.Stmt, is, cachedValue)
+	if err != nil {
+		return nil, err
+	}
+	stmt := &executor.ExecStmt{
+		InfoSchema:  is,
+		Plan:        execPlan,
+		StmtNode:    prepared.Stmt,
+		Ctx:         s,
+		OutputNames: execPlan.OutputNames(),
+	}
+	return stmt.GetPointRecord(is, ctx, s)
+}
+
 // ExecutePreparedStmt executes a prepared statement.
 func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args []types.Datum) (sqlexec.RecordSet, error) {
-	s.PrepareTxnCtx(ctx)
+	var err error
 	s.sessionVars.StartTime = time.Now()
-	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args)
+	prepared, ok := s.sessionVars.PreparedStmts[stmtID]
+	if !ok {
+		err = errors.Errorf("prepared ast not found for stmtID=%d", stmtID)
+		logutil.Logger(ctx).Error("prepared not found", zap.Uint32("stmtID", stmtID))
+		return nil, err
+	}
+	// try fetch from plan cache at start
+	var cachedValue *plannercore.PSTMTPlanCacheValue
+	if prepared.UseCache {
+		cacheKey := plannercore.NewPSTMTPlanCacheKey(s.sessionVars, stmtID, prepared.SchemaVersion)
+		val, exists := s.PreparedPlanCache().Get(cacheKey)
+		if exists {
+			cachedValue = val.(*plannercore.PSTMTPlanCacheValue)
+		}
+	}
+	if cachedValue != nil {
+		isPointExec, err := executor.IsPointGetWithPKOrUniqueKeyByAutoCommit(s, cachedValue.Plan)
+		if err != nil {
+			return nil, err
+		}
+		if isPointExec {
+			return s.PointExec(stmtID, ctx, prepared, cachedValue)
+		}
+	}
+	s.PrepareTxnCtx(ctx)
+	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args, cachedValue)
 	if err != nil {
 		return nil, err
 	}
