@@ -1191,7 +1191,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 	s.sessionVars.StartTime = time.Now()
 	prepared, ok := s.sessionVars.PreparedStmts[stmtID]
 	if !ok {
-		err = errors.Errorf("prepared ast not found for stmtID=%d", stmtID)
+		err = errors.Errorf("Prepared statement not found")
 		logutil.Logger(ctx).Error("prepared not found", zap.Uint32("stmtID", stmtID))
 		return nil, err
 	}
