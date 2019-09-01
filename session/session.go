@@ -1212,6 +1212,9 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 		if isPointExec {
 			return s.PointExec(ctx, stmtID, prepared, cachedValue, args)
 		}
+	} else {
+		logutil.Logger(ctx).Error("cache not hit",
+			zap.Uint32("stmtID", stmtID), zap.String("StmtType", prepared.StmtType))
 	}
 	s.PrepareTxnCtx(ctx)
 	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args, cachedValue)
