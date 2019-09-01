@@ -1174,7 +1174,7 @@ func (s *session) PointExec(ctx context.Context, stmtID uint32,
 		Ctx:         s,
 		OutputNames: execPlan.OutputNames(),
 	}
-	return stmt.GetPointRecord(is, ctx, s)
+	return stmt.GetPointRecord(ctx, is, s)
 }
 
 // ExecutePreparedStmt executes a prepared statement.
@@ -1202,7 +1202,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 			return nil, err
 		}
 		if isPointExec {
-			return s.PointExec(stmtID, ctx, prepared, cachedValue)
+			return s.PointExec(ctx, stmtID, prepared, cachedValue)
 		}
 	}
 	s.PrepareTxnCtx(ctx)
