@@ -288,7 +288,6 @@ func CompileExecutePreparedStmt(ctx context.Context, sctx sessionctx.Context,
 	} else {
 		execPlan, err = planner.Optimize(ctx, sctx, execStmt, is)
 	}
-	execPlan, err = planner.Optimize(ctx, sctx, execStmt, is)
 	if err != nil {
 		return nil, err
 	}
