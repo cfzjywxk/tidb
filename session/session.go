@@ -1180,7 +1180,9 @@ func (s *session) PointExec(ctx context.Context,
 		Ctx:         s,
 		OutputNames: execPlan.OutputNames(),
 	}
-	return stmt.GetPointRecord(ctx, is, s)
+	rs, err := stmt.GetPointRecord(ctx, is, s)
+	s.txn.changeToInvalid()
+	return rs, err
 }
 
 // ExecutePreparedStmt executes a prepared statement.
