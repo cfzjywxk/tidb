@@ -17,6 +17,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
 	"strconv"
 	"strings"
 
@@ -271,9 +273,24 @@ func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, 
 			return nil
 		}
 	}
+	if prepared.PointPlan != nil {
+		plan := prepared.PointPlan.(Plan)
+		e.names = plan.OutputNames()
+		e.Plan = plan
+		logutil.Logger(ctx).Info("===[DEBUG]=== point plan hit for text", zap.Uint32("id", e.ExecID))
+		return nil
+	}
 	p, err := OptimizeAstNode(ctx, sctx, prepared.Stmt, is)
 	if err != nil {
 		return err
+	}
+	ok, err := IsPointGetWithPKOrUniqueKeyByAutoCommit(sctx, p)
+	if err != nil {
+		return err
+	}
+	if ok {
+		prepared.PointPlan = p
+		logutil.Logger(ctx).Info("===[DEBUG]=== point plan saved for ", zap.Uint32("id", e.ExecID))
 	}
 	e.names = p.OutputNames()
 	e.Plan = p
@@ -794,5 +811,49 @@ func (e *Explain) prepareTaskDot(p PhysicalPlan, taskTp string, buffer *bytes.Bu
 
 	for i := range pipelines {
 		buffer.WriteString(pipelines[i])
+	}
+}
+
+// IsPointGetWithPKOrUniqueKeyByAutoCommit returns true when meets following conditions:
+//  1. ctx is auto commit tagged
+//  2. txn is not valid
+//  2. plan is point get by pk, or point get by unique index (no double read)
+func IsPointGetWithPKOrUniqueKeyByAutoCommit(ctx sessionctx.Context, p Plan) (bool, error) {
+	// check auto commit
+	if !ctx.GetSessionVars().IsAutocommit() {
+		return false, nil
+	}
+
+	// check txn
+	txn, err := ctx.Txn(false)
+	if err != nil {
+		return false, err
+	}
+	if txn.Valid() {
+		return false, nil
+	}
+
+	// check plan
+	if proj, ok := p.(*PhysicalProjection); ok {
+		if len(proj.Children()) != 1 {
+			return false, nil
+		}
+		p = proj.Children()[0]
+	}
+
+	switch v := p.(type) {
+	case *PhysicalIndexReader:
+		indexScan := v.IndexPlans[0].(*PhysicalIndexScan)
+		return indexScan.IsPointGetByUniqueKey(ctx.GetSessionVars().StmtCtx), nil
+	case *PhysicalTableReader:
+		tableScan := v.TablePlans[0].(*PhysicalTableScan)
+		return len(tableScan.Ranges) == 1 && tableScan.Ranges[0].IsPoint(ctx.GetSessionVars().StmtCtx), nil
+	case *PointGetPlan:
+		// If the PointGetPlan needs to read data using unique index (double read), we
+		// can't use max uint64, because using math.MaxUint64 can't guarantee repeatable-read
+		// and the data and index would be inconsistent!
+		return v.IndexInfo == nil, nil
+	default:
+		return false, nil
 	}
 }
