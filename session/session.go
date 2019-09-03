@@ -1202,7 +1202,9 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 			return s.PointExec(ctx, stmtID, prepared, cachedValue, args)
 		}
 	} else {
-		logutil.Logger(ctx).Error("cache not hit", zap.String("sql", prepared.Stmt.Text()))
+		if s.sessionVars.EnableNoopFuncs {
+			logutil.Logger(ctx).Error("cache not hit", zap.String("sql", prepared.Stmt.Text()))
+		}
 	}
 	s.PrepareTxnCtx(ctx)
 	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args, cachedValue)
