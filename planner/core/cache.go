@@ -62,7 +62,7 @@ func PreparedPlanCacheEnabled() bool {
 type pstmtPlanCacheKey struct {
 	database       string
 	connID         uint64
-	pstmtID        uint32
+	digestVal      string
 	snapshot       uint64
 	schemaVersion  int64
 	sqlMode        mysql.SQLMode
@@ -76,14 +76,15 @@ func (key *pstmtPlanCacheKey) Hash() []byte {
 	if len(key.hash) == 0 {
 		var (
 			dbBytes    = hack.Slice(key.database)
-			bufferSize = len(dbBytes) + 8*6
+			dgBytes    = hack.Slice(key.digestVal)
+			bufferSize = len(dbBytes) + len(dgBytes) + 8*5
 		)
 		if key.hash == nil {
 			key.hash = make([]byte, 0, bufferSize)
 		}
 		key.hash = append(key.hash, dbBytes...)
+		key.hash = append(key.hash, dgBytes...)
 		key.hash = codec.EncodeInt(key.hash, int64(key.connID))
-		key.hash = codec.EncodeInt(key.hash, int64(key.pstmtID))
 		key.hash = codec.EncodeInt(key.hash, int64(key.snapshot))
 		key.hash = codec.EncodeInt(key.hash, key.schemaVersion)
 		key.hash = codec.EncodeInt(key.hash, int64(key.sqlMode))
@@ -92,20 +93,8 @@ func (key *pstmtPlanCacheKey) Hash() []byte {
 	return key.hash
 }
 
-// SetPstmtIDSchemaVersion implements PstmtCacheKeyMutator interface to change pstmtID and schemaVersion of cacheKey.
-// so we can reuse Key instead of new every time.
-func SetPstmtIDSchemaVersion(key kvcache.Key, pstmtID uint32, schemaVersion int64) {
-	psStmtKey, isPsStmtKey := key.(*pstmtPlanCacheKey)
-	if !isPsStmtKey {
-		return
-	}
-	psStmtKey.pstmtID = pstmtID
-	psStmtKey.schemaVersion = schemaVersion
-	psStmtKey.hash = psStmtKey.hash[:0]
-}
-
 // NewPSTMTPlanCacheKey creates a new pstmtPlanCacheKey object.
-func NewPSTMTPlanCacheKey(sessionVars *variable.SessionVars, pstmtID uint32, schemaVersion int64) kvcache.Key {
+func planCacheKey(sessionVars *variable.SessionVars, digestValue string, schemaVersion int64) kvcache.Key {
 	timezoneOffset := 0
 	if sessionVars.TimeZone != nil {
 		_, timezoneOffset = time.Now().In(sessionVars.TimeZone).Zone()
@@ -113,12 +102,17 @@ func NewPSTMTPlanCacheKey(sessionVars *variable.SessionVars, pstmtID uint32, sch
 	return &pstmtPlanCacheKey{
 		database:       sessionVars.CurrentDB,
 		connID:         sessionVars.ConnectionID,
-		pstmtID:        pstmtID,
+		digestVal:      digestValue,
 		snapshot:       sessionVars.SnapshotTS,
 		schemaVersion:  schemaVersion,
 		sqlMode:        sessionVars.SQLMode,
 		timezoneOffset: timezoneOffset,
 	}
+}
+
+// NewPSTMTPlanCacheKey creates a new pstmtPlanCacheKey object.
+func NewPSTMTPlanCacheKey(sessionVars *variable.SessionVars, dgVal string, schemaVersion int64) kvcache.Key {
+	return planCacheKey(sessionVars, dgVal, schemaVersion)
 }
 
 // PSTMTPlanCacheValue stores the cached Statement and StmtNode.

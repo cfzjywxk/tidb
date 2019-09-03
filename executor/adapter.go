@@ -210,6 +210,7 @@ func (a *ExecStmt) GetPointRecord(ctx context.Context, is infoschema.InfoSchema,
 	sctx sessionctx.Context) (*recordSet, error) {
 	var err error
 	var startTs uint64 = math.MaxUint64
+	// only necessary steps for point get
 	err = sctx.InitTxnWithStartTS(startTs)
 	if err != nil {
 		logutil.Logger(ctx).Error("error init txn max", zap.Error(err))
@@ -221,6 +222,7 @@ func (a *ExecStmt) GetPointRecord(ctx context.Context, is infoschema.InfoSchema,
 	if b.err != nil {
 		return nil, errors.Trace(b.err)
 	}
+	// PointGet executor open
 	if err = exec.Open(ctx); err != nil {
 		terror.Call(exec.Close)
 		return nil, err

@@ -264,21 +264,7 @@ func (s *session) cleanRetryInfo() {
 		return
 	}
 
-	planCacheEnabled := plannercore.PreparedPlanCacheEnabled()
-	var cacheKey kvcache.Key
-	if planCacheEnabled {
-		firstStmtID := retryInfo.DroppedPreparedStmtIDs[0]
-		cacheKey = plannercore.NewPSTMTPlanCacheKey(
-			s.sessionVars, firstStmtID, s.sessionVars.PreparedStmts[firstStmtID].SchemaVersion,
-		)
-	}
-	for i, stmtID := range retryInfo.DroppedPreparedStmtIDs {
-		if planCacheEnabled {
-			if i > 0 {
-				plannercore.SetPstmtIDSchemaVersion(cacheKey, stmtID, s.sessionVars.PreparedStmts[stmtID].SchemaVersion)
-			}
-			s.PreparedPlanCache().Delete(cacheKey)
-		}
+	for _, stmtID := range retryInfo.DroppedPreparedStmtIDs {
 		s.sessionVars.RemovePreparedStmt(stmtID)
 	}
 }
@@ -1164,6 +1150,7 @@ func (s *session) PointExec(ctx context.Context,
 	stmtID uint32, prepared *ast.Prepared,
 	cachedValue *plannercore.PSTMTPlanCacheValue, args []types.Datum) (sqlexec.RecordSet, error) {
 	is := executor.GetInfoSchema(s)
+	// execAst -> execPlan 1. ast args into Expressions 2. Expressions into phy plan ParamMarkerExprs
 	execAst := &ast.ExecuteStmt{ExecID: stmtID}
 	if err := executor.ResetContextOfStmt(s, execAst); err != nil {
 		return nil, err
@@ -1179,7 +1166,9 @@ func (s *session) PointExec(ctx context.Context,
 		StmtNode:    prepared.Stmt,
 		Ctx:         s,
 		OutputNames: execPlan.OutputNames(),
+		Text:        prepared.Stmt.Text(),
 	}
+	// execution process with short path
 	rs, err := stmt.GetPointRecord(ctx, is, s)
 	s.txn.changeToInvalid()
 	return rs, err
@@ -1198,7 +1187,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 	// try fetch from plan cache at start
 	var cachedValue *plannercore.PSTMTPlanCacheValue
 	if prepared.UseCache {
-		cacheKey := plannercore.NewPSTMTPlanCacheKey(s.sessionVars, stmtID, prepared.SchemaVersion)
+		cacheKey := plannercore.NewPSTMTPlanCacheKey(s.sessionVars, prepared.DigestVal, prepared.SchemaVersion)
 		val, exists := s.PreparedPlanCache().Get(cacheKey)
 		if exists {
 			cachedValue = val.(*plannercore.PSTMTPlanCacheValue)
@@ -1212,6 +1201,8 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 		if isPointExec {
 			return s.PointExec(ctx, stmtID, prepared, cachedValue, args)
 		}
+	} else {
+		logutil.Logger(ctx).Error("cache not hit", zap.String("sql", prepared.Stmt.Text()))
 	}
 	s.PrepareTxnCtx(ctx)
 	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args, cachedValue)

@@ -167,11 +167,13 @@ func (e *PrepareExec) Next(ctx context.Context, req *chunk.Chunk) error {
 	for i := 0; i < e.ParamCount; i++ {
 		sorter.markers[i].SetOrder(i)
 	}
+	_, digestValue := parser.NormalizeDigest(stmt.Text())
 	prepared := &ast.Prepared{
 		Stmt:          stmt,
 		StmtType:      GetStmtLabel(stmt),
 		Params:        sorter.markers,
 		SchemaVersion: e.is.SchemaMetaVersion(),
+		DigestVal:     digestValue,
 	}
 	prepared.UseCache = plannercore.PreparedPlanCacheEnabled() && (vars.LightningMode || plannercore.Cacheable(stmt))
 
@@ -259,11 +261,6 @@ func (e *DeallocateExec) Next(ctx context.Context, req *chunk.Chunk) error {
 		return errors.Trace(plannercore.ErrStmtNotFound)
 	}
 	delete(vars.PreparedStmtNameToID, e.Name)
-	if plannercore.PreparedPlanCacheEnabled() {
-		e.ctx.PreparedPlanCache().Delete(plannercore.NewPSTMTPlanCacheKey(
-			vars, id, vars.PreparedStmts[id].SchemaVersion,
-		))
-	}
 	vars.RemovePreparedStmt(id)
 	return nil
 }

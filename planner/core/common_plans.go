@@ -244,7 +244,7 @@ func (e *Execute) OptimizePreparedPlan(ctx context.Context, sctx sessionctx.Cont
 }
 
 func (e *Execute) getPhysicalPlan(ctx context.Context, sctx sessionctx.Context, is infoschema.InfoSchema, prepared *ast.Prepared) error {
-	cacheKey := NewPSTMTPlanCacheKey(sctx.GetSessionVars(), e.ExecID, prepared.SchemaVersion)
+	cacheKey := NewPSTMTPlanCacheKey(sctx.GetSessionVars(), prepared.DigestVal, prepared.SchemaVersion)
 	sctx.GetSessionVars().StmtCtx.UseCache = prepared.UseCache
 	if prepared.UseCache {
 		var cachedVal *PSTMTPlanCacheValue
