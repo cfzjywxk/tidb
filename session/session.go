@@ -1186,7 +1186,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 	}
 	// try fetch from plan cache at start
 	var cachedValue *plannercore.PSTMTPlanCacheValue
-	if prepared.UseCache {
+	if s.sessionVars.EnableNoopFuncs {
 		cacheKey := plannercore.NewPSTMTPlanCacheKey(s.sessionVars, prepared.DigestVal, prepared.SchemaVersion)
 		val, exists := s.PreparedPlanCache().Get(cacheKey)
 		if exists {
