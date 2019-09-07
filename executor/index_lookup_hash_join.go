@@ -424,6 +424,7 @@ func (iw *indexHashJoinInnerWorker) joinMatchedInnerRow2Chunk(ctx context.Contex
 		joinResult.err = err
 		return false, joinResult
 	}
+	iw.matchedOuterPtrs = iw.matchedOuterPtrs[:0]
 	iw.matchedOuterPtrs = task.lookupMap.Get(h.Sum64())
 	if len(iw.matchedOuterPtrs) == 0 {
 		return true, joinResult
