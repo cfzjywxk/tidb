@@ -1807,7 +1807,12 @@ func (b *executorBuilder) buildIndexLookUpJoin(v *plannercore.PhysicalIndexJoin)
 	if v.KeepOuterOrder {
 		return e
 	}
-	return &IndexNestedLoopHashJoin{IndexLookUpJoin: *e}
+	idxHash := &IndexNestedLoopHashJoin{IndexLookUpJoin: *e}
+	concurrency := e.ctx.GetSessionVars().IndexLookupJoinConcurrency
+	for i := int(0); i < concurrency; i++ {
+		idxHash.joiners[i] = newJoiner(b.ctx, v.JoinType, v.OuterIndex == 1, defaultValues, v.OtherConditions, leftTypes, rightTypes)
+	}
+	return idxHash
 }
 
 // containsLimit tests if the execs contains Limit because we do not know whether `Limit` has consumed all of its' source,

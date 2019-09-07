@@ -45,6 +45,7 @@ type IndexNestedLoopHashJoin struct {
 	IndexLookUpJoin
 	resultCh          chan *indexHashJoinResult
 	joinChkResourceCh []chan *chunk.Chunk
+	joiners           []joiner
 }
 
 type indexHashJoinOuterWorker struct {
@@ -120,8 +121,7 @@ func (e *IndexNestedLoopHashJoin) Open(ctx context.Context) error {
 }
 
 func (e *IndexNestedLoopHashJoin) startWorkers(ctx context.Context) {
-	//concurrency := e.ctx.GetSessionVars().IndexLookupJoinConcurrency
-	concurrency := 1
+	concurrency := e.ctx.GetSessionVars().IndexLookupJoinConcurrency
 	workerCtx, cancelFunc := context.WithCancel(ctx)
 	e.cancelFunc = cancelFunc
 	innerCh := make(chan *indexHashJoinTask, concurrency)
@@ -267,7 +267,7 @@ func (e *IndexNestedLoopHashJoin) newInnerWorker(taskCh chan *indexHashJoinTask,
 			keyOff2IdxOff: e.keyOff2IdxOff,
 		},
 		taskCh:            taskCh,
-		joiner:            e.joiner,
+		joiner:            e.joiners[workerID],
 		joinChkResourceCh: e.joinChkResourceCh[workerID],
 		resultCh:          e.resultCh,
 		matchedOuterPtrs:  make([]chunk.RowPtr, 0, e.maxChunkSize),
