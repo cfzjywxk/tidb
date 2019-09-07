@@ -254,6 +254,7 @@ func (m *rowHashMap) Put(hashKey uint64, rowPtr chunk.RowPtr) {
 
 // Get gets the values of the "key" and appends them to "values".
 func (m *rowHashMap) Get(hashKey uint64) (rowPtrs []chunk.RowPtr) {
+	rowPtrs = rowPtrs[:0]
 	entryAddr := m.hashTable[hashKey]
 	for entryAddr != nullEntryAddr {
 		e := m.entryStore.get(entryAddr)
