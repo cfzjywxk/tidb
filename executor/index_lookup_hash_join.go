@@ -371,19 +371,15 @@ func (iw *indexHashJoinInnerWorker) handleHashJoinInnerWorkerPanic(r interface{}
 	if r != nil {
 		iw.resultCh <- &indexHashJoinResult{err: errors.Errorf("%v", r)}
 	}
-	iw.wg.Done()
 }
 
 func (iw *indexHashJoinInnerWorker) handleTask(ctx context.Context, cancelFunc context.CancelFunc, task *indexHashJoinTask, joinResult *indexHashJoinResult, h hash.Hash64) error {
-	iw.wg = &sync.WaitGroup{}
-	iw.wg.Add(1)
 	// TODO(XuHuaiyu): we may always use the smaller side to build the hashtable.
-	go util.WithRecovery(func() { iw.buildHashTableForOuterResult(ctx, cancelFunc, task, h) }, iw.handleHashJoinInnerWorkerPanic)
 	err := iw.fetchInnerResults(ctx, task.lookUpJoinTask)
 	if err != nil {
 		return err
 	}
-	iw.wg.Wait()
+	iw.buildHashTableForOuterResult(ctx, cancelFunc, task, h)
 	return iw.doJoin(ctx, task, joinResult, h)
 }
 
