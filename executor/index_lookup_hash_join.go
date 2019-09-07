@@ -120,7 +120,8 @@ func (e *IndexNestedLoopHashJoin) Open(ctx context.Context) error {
 }
 
 func (e *IndexNestedLoopHashJoin) startWorkers(ctx context.Context) {
-	concurrency := e.ctx.GetSessionVars().IndexLookupJoinConcurrency
+	//concurrency := e.ctx.GetSessionVars().IndexLookupJoinConcurrency
+	concurrency := 1
 	workerCtx, cancelFunc := context.WithCancel(ctx)
 	e.cancelFunc = cancelFunc
 	innerCh := make(chan *indexHashJoinTask, concurrency)
