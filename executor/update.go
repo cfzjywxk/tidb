@@ -194,6 +194,9 @@ func (e *UpdateExec) fetchChunkRows(ctx context.Context) error {
 			e.newRowsData = append(e.newRowsData, newRow)
 			globalRowIdx++
 		}
+		if e.isPointUpdate {
+			break
+		}
 		chk = chunk.Renew(chk, e.maxChunkSize)
 	}
 	return nil
