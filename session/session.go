@@ -678,6 +678,10 @@ func (s *session) retry(ctx context.Context, maxCnt uint) (err error) {
 				s.StmtRollback()
 				break
 			}
+			if !s.txn.Valid() {
+				logutil.Logger(ctx).Error("retrying txn not valid")
+				panic("txn not valid")
+			}
 			err = s.StmtCommit()
 			if err != nil {
 				return err
@@ -1197,7 +1201,7 @@ func (s *session) CachedPlanExec(ctx context.Context,
 // IsPointGetWithPKOrUniqueKeyByAutoCommit
 func (s *session) IsCachedExecOk(ctx context.Context, prepared *ast.Prepared) (bool, error) {
 	if prepared.CachedPlan != nil {
-		plan := prepared.CachedPlan.(plannercore.PhysicalPlan)
+		plan := prepared.CachedPlan.(plannercore.Plan)
 		ok, err := plannercore.IsPointGetWithPKOrUniqueKeyByAutoCommit(s, plan)
 		if err != nil {
 			return false, err
@@ -1205,8 +1209,6 @@ func (s *session) IsCachedExecOk(ctx context.Context, prepared *ast.Prepared) (b
 		if ok {
 			return true, nil
 		}
-		logutil.Logger(ctx).Error("currently only point get plan should be cached in prepared, "+
-			"structure", zap.String("plan", plan.ExplainInfo()))
 	}
 	return false, nil
 }
@@ -1229,6 +1231,7 @@ func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args [
 		return s.CachedPlanExec(ctx, stmtID, prepared, args)
 	}
 	s.PrepareTxnCtx(ctx)
+	s.PrepareTxnFuture(ctx)
 	st, err := executor.CompileExecutePreparedStmt(ctx, s, stmtID, args)
 	if err != nil {
 		return nil, err
