@@ -297,6 +297,10 @@ func CompileExecutePreparedStmt(ctx context.Context, sctx sessionctx.Context,
 		stmt.Text = prepared.Stmt.Text()
 		sctx.GetSessionVars().StmtCtx.OriginalSQL = stmt.Text
 	}
+	stmt.executor, err = stmt.buildExecutor()
+	if err != nil {
+		return nil, err
+	}
 	return stmt, nil
 }
 

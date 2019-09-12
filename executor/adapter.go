@@ -206,6 +206,9 @@ type ExecStmt struct {
 
 	// OutputNames will be set if using cached plan
 	OutputNames []*types.FieldName
+
+	//
+	executor Executor
 }
 
 // GetPointRecord short path for point exec directly from plan, keep only necessary steps
@@ -321,9 +324,14 @@ func (a *ExecStmt) Exec(ctx context.Context) (_ sqlexec.RecordSet, err error) {
 		}()
 	}
 
-	e, err := a.buildExecutor()
-	if err != nil {
-		return nil, err
+	var e Executor
+	if a.executor == nil {
+		e, err = a.buildExecutor()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		e = a.executor
 	}
 
 	if err = e.Open(ctx); err != nil {
