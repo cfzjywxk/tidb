@@ -1219,16 +1219,16 @@ func (s *session) IsCachedExecOk(ctx context.Context, prepared *ast.Prepared) (b
 	if prepared.CachedPlan == nil {
 		return false, nil
 	}
-	// check auto commit
-	if !s.GetSessionVars().IsAutocommit() {
-		return false, nil
-	}
 	// maybe we'd better check cached plan type here, current
 	// only point select/update will be cached, see "getPhysicalPlan" func
 	var ok bool
 	var err error
 	switch prepared.CachedPlan.(type) {
 	case *plannercore.PointGetPlan:
+		// check auto commit
+		if !s.GetSessionVars().IsAutocommit() {
+			return false, nil
+		}
 		ok = true
 	case *plannercore.Update:
 		ok = true

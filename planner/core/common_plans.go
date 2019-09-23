@@ -315,7 +315,7 @@ func (e *Execute) tryCachePointPlan(ctx context.Context, sctx sessionctx.Context
 	case *PointGetPlan:
 		ok, err = IsPointGetWithPKOrUniqueKeyByAutoCommit(sctx, p)
 	case *Update:
-		ok, err = IsPointUpdateByAutoCommit(sctx, p)
+		ok, err = IsPointUpdate(sctx, p)
 		if ok {
 			// make constant expression store paramMarker
 			sctx.GetSessionVars().StmtCtx.PointExec = true
@@ -920,8 +920,8 @@ func IsPointGetWithPKOrUniqueKeyByAutoCommit(ctx sessionctx.Context, p Plan) (bo
 	}
 }
 
-// IsPointUpdateByAutoCommit checks if plan p is point update and is in autocommit context
-func IsPointUpdateByAutoCommit(ctx sessionctx.Context, p Plan) (bool, error) {
+// IsPointUpdate checks if plan p is point update and is in autocommit context
+func IsPointUpdate(ctx sessionctx.Context, p Plan) (bool, error) {
 	// check txn
 	txn, err := ctx.Txn(false)
 	if err != nil {
