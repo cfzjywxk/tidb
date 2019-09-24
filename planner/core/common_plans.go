@@ -922,15 +922,6 @@ func IsPointGetWithPKOrUniqueKeyByAutoCommit(ctx sessionctx.Context, p Plan) (bo
 
 // IsPointUpdate checks if plan p is point update and is in autocommit context
 func IsPointUpdate(ctx sessionctx.Context, p Plan) (bool, error) {
-	// check txn
-	txn, err := ctx.Txn(false)
-	if err != nil {
-		return false, err
-	}
-	if txn.Valid() {
-		return false, nil
-	}
-
 	// check plan
 	updPlan, ok := p.(*Update)
 	if !ok {
