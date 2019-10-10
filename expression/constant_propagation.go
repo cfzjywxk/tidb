@@ -160,7 +160,11 @@ func (s *propConstSolver) propagateConstantEQ() {
 		}
 		for i, cond := range s.conditions {
 			if !visited[i] {
-				_, s.conditions[i] = ColumnSubstitutePartPrune(cond, NewSchema(cols...), cons)
+				if i == 0 {
+					_, s.conditions[i] = ColumnSubstitutePartPrune(true, cond, NewSchema(cols...), cons)
+				} else {
+					_, s.conditions[i] = ColumnSubstitutePartPrune(false, cond, NewSchema(cols...), cons)
+				}
 			}
 		}
 	}

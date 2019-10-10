@@ -174,7 +174,7 @@ func ColumnSubstitute(expr Expression, schema *Schema, newExprs []Expression) Ex
 
 // ColumnSubstitutePartPrune same as ColumnSubstitute except that it will return if the
 // input expr is substituted, the newFunctionInternal is only called if its child is substituted
-func ColumnSubstitutePartPrune(expr Expression, schema *Schema, newExprs []Expression) (bool, Expression) {
+func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema, newExprs []Expression) (bool, Expression) {
 	switch v := expr.(type) {
 	case *Column:
 		id := schema.ColumnIndex(v)
@@ -189,20 +189,33 @@ func ColumnSubstitutePartPrune(expr Expression, schema *Schema, newExprs []Expre
 	case *ScalarFunction:
 		if v.FuncName.L == ast.Cast {
 			newFunc := v.Clone().(*ScalarFunction)
-			_, newFunc.GetArgs()[0] = ColumnSubstitutePartPrune(newFunc.GetArgs()[0], schema, newExprs)
+			_, newFunc.GetArgs()[0] = ColumnSubstitutePartPrune(isPartExpr, newFunc.GetArgs()[0], schema, newExprs)
 			return true, newFunc
 		}
-		newArgs := make([]Expression, 0, len(v.GetArgs()))
 		substituted := false
-		for _, arg := range v.GetArgs() {
-			changed, newFuncExpr := ColumnSubstitutePartPrune(arg, schema, newExprs)
-			if changed {
-				substituted = true
+		if !isPartExpr {
+			newArgs := make([]Expression, 0, len(v.GetArgs()))
+			for _, arg := range v.GetArgs() {
+				changed, newFuncExpr := ColumnSubstitutePartPrune(isPartExpr, arg, schema, newExprs)
+				if changed {
+					substituted = true
+				}
+				newArgs = append(newArgs, newFuncExpr)
 			}
-			newArgs = append(newArgs, newFuncExpr)
-		}
-		if substituted {
-			return true, NewFunctionInternal(v.GetCtx(), v.FuncName.L, v.RetType, newArgs...)
+			if substituted {
+				return true, NewFunctionInternal(v.GetCtx(), v.FuncName.L, v.RetType, newArgs...)
+			}
+		} else {
+			for idx, arg := range v.GetArgs() {
+				var changed bool
+				changed, v.Function.getArgs()[idx] = ColumnSubstitutePartPrune(isPartExpr, arg, schema, newExprs)
+				if changed {
+					substituted = true
+				}
+			}
+			if substituted {
+				FoldConstant(v)
+			}
 		}
 	}
 	return false, expr
