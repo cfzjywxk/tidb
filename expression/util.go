@@ -214,8 +214,7 @@ func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema,
 				}
 			}
 			if substituted {
-				FoldConstant(v)
-				return true, expr
+				return true, FoldConstant(v)
 			}
 		}
 	}
