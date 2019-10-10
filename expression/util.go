@@ -185,6 +185,9 @@ func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema,
 		if v.InOperand {
 			newExpr = setExprColumnInOperand(newExpr)
 		}
+		if isPartExpr {
+			newExpr = FoldConstant(newExpr)
+		}
 		return true, newExpr
 	case *ScalarFunction:
 		if v.FuncName.L == ast.Cast {
