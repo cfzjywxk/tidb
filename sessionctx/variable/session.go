@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"github.com/pingcap/tidb/util/arena"
 	"strconv"
 	"strings"
 	"sync"
@@ -440,6 +441,11 @@ type SessionVars struct {
 	replicaRead kv.ReplicaReadType
 
 	PlannerSelectBlockAsName []model.CIStr
+
+	//
+	PartExpressions map[int64]interface{}
+	PartExpressionsSchemaVersion map[int64]int64
+	SolverMemAllocator arena.Allocator
 }
 
 // PreparedParams contains the parameters of the current prepared statement when executing it.
@@ -514,6 +520,9 @@ func NewSessionVars() *SessionVars {
 		EnableNoopFuncs:             DefTiDBEnableNoopFuncs,
 		replicaRead:                 kv.ReplicaReadLeader,
 		AllowRemoveAutoInc:          DefTiDBAllowRemoveAutoInc,
+		PartExpressions:             make(map[int64]interface{}),
+		PartExpressionsSchemaVersion: make(map[int64]int64),
+		SolverMemAllocator:          arena.NewAllocator(512 * 1024),
 	}
 	vars.Concurrency = Concurrency{
 		IndexLookupConcurrency:     DefIndexLookupConcurrency,

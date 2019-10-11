@@ -172,6 +172,60 @@ func ColumnSubstitute(expr Expression, schema *Schema, newExprs []Expression) Ex
 	return expr
 }
 
+// ColumnSubstitutePartPrune same as ColumnSubstitute except that it will return if the
+// input expr is substituted, the newFunctionInternal is only called if its child is substituted
+func ColumnSubstitutePartPrune(sctx sessionctx.Context, isPartExpr bool,
+	expr Expression, schema *Schema, newExprs []Expression) (bool, Expression) {
+	switch v := expr.(type) {
+	case *Column:
+		id := schema.ColumnIndex(v)
+		if id == -1 {
+			return false, v
+		}
+		newExpr := newExprs[id]
+		if v.InOperand {
+			newExpr = setExprColumnInOperand(newExpr)
+		}
+		if isPartExpr {
+			newExpr = FoldConstant(newExpr)
+		}
+		return true, newExpr
+	case *ScalarFunction:
+		if v.FuncName.L == ast.Cast {
+			newFunc := v.Clone().(*ScalarFunction)
+			_, newFunc.GetArgs()[0] = ColumnSubstitutePartPrune(sctx, isPartExpr, newFunc.GetArgs()[0], schema, newExprs)
+			return true, newFunc
+		}
+		substituted := false
+		if !isPartExpr {
+			newArgs := make([]Expression, 0, len(v.GetArgs()))
+			for _, arg := range v.GetArgs() {
+				changed, newFuncExpr := ColumnSubstitutePartPrune(sctx, isPartExpr, arg, schema, newExprs)
+				if changed {
+					substituted = true
+				}
+				newArgs = append(newArgs, newFuncExpr)
+			}
+			if substituted {
+				return true, NewFunctionInternal(v.GetCtx(), v.FuncName.L, v.RetType, newArgs...)
+			}
+		} else {
+			for idx, arg := range v.GetArgs() {
+				var changed bool
+				changed, v.Function.getArgs()[idx] = ColumnSubstitutePartPrune(sctx, isPartExpr, arg, schema, newExprs)
+				if changed {
+					substituted = true
+				}
+			}
+			if substituted {
+				retExpr, _ := FoldConstWithAllocator(sctx.GetSessionVars().SolverMemAllocator, expr)
+				return true, retExpr
+			}
+		}
+	}
+	return false, expr
+}
+
 // getValidPrefix gets a prefix of string which can parsed to a number with base. the minimum base is 2 and the maximum is 36.
 func getValidPrefix(s string, base int64) string {
 	var (

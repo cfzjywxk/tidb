@@ -110,12 +110,53 @@ func (s *partitionProcessor) prune(ds *DataSource) (LogicalPlan, error) {
 	}
 	partitionDefs := ds.table.Meta().Partition.Definitions
 
+	sctx := ds.SCtx()
+	var exprArr []expression.Expression
+	tableID := ds.table.Meta().ID
+	if cachedPartExprs, ok := sctx.GetSessionVars().PartExpressions[tableID]; ok {
+		if sctx.GetSessionVars().TxnCtx.SchemaVersion ==
+			sctx.GetSessionVars().PartExpressionsSchemaVersion[tableID] {
+			exprArr = cachedPartExprs.([]expression.Expression)
+		}
+	}
+	if exprArr == nil {
+		exprArr = make([]expression.Expression, len(partitionExprs))
+		for i, partExpr := range partitionExprs {
+			exprArr[i] = partExpr.Clone()
+		}
+		sctx.GetSessionVars().PartExpressions[tableID] = exprArr
+		sctx.GetSessionVars().PartExpressionsSchemaVersion[tableID] = sctx.GetSessionVars().TxnCtx.SchemaVersion
+	}
+	filterConds := make([]expression.Expression, len(ds.allConds))
+	copy(filterConds, ds.allConds)
+	filterConds = expression.PropagateConstant(sctx, filterConds)
+	presolvedFilters := solver.Solve(sctx, filterConds)
+	alwaysFalse := false
+	if len(presolvedFilters) == 1 {
+		// Constant false.
+		if con, ok := presolvedFilters[0].(*expression.Constant); ok && con.DeferredExpr == nil && con.ParamMarker == nil {
+			ret, _, err := expression.EvalBool(sctx, expression.CNFExprs{con}, chunk.Row{})
+			if err == nil && ret == false {
+				alwaysFalse = true
+			}
+		}
+	}
+
 	// Rewrite data source to union all partitions, during which we may prune some
 	// partitions according to the filter conditions pushed to the DataSource.
 	children := make([]LogicalPlan, 0, len(pi.Definitions))
-	for i, expr := range partitionExprs {
+	for i, expr := range exprArr {
+		if alwaysFalse {
+			break
+		}
 		// If the select condition would never be satisified, prune that partition.
-		pruned, err := s.canBePruned(ds.SCtx(), col, expr, ds.allConds)
+		pruned, err := s.canBePruned(ds.SCtx(), col, expr, presolvedFilters)
+		if sf, ok := expr.(*expression.ScalarFunction); ok {
+			restoreErr := sf.ReostoreArgs()
+			if restoreErr != nil {
+				return nil, restoreErr
+			}
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -16,7 +16,6 @@ package expression
 import (
 	"bytes"
 	"fmt"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/model"
@@ -39,6 +38,23 @@ type ScalarFunction struct {
 	RetType  *types.FieldType
 	Function builtinFunc
 	hashcode []byte
+
+	//
+	OrigArgs []Expression
+}
+
+func (sf *ScalarFunction) ReostoreArgs() error {
+	var err error
+	for i := range sf.GetArgs() {
+		sf.Function.getArgs()[i] = sf.OrigArgs[i]
+		if scalarFunc, ok := sf.Function.getArgs()[i].(*ScalarFunction); ok {
+			err = scalarFunc.ReostoreArgs()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return err
 }
 
 // VecEvalInt evaluates this expression in a vectorized manner.
@@ -146,6 +162,8 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 		RetType:  retType,
 		Function: f,
 	}
+	sf.OrigArgs = make([]Expression, len(sf.GetArgs()))
+	copy(sf.OrigArgs, sf.GetArgs())
 	if fold {
 		return FoldConstant(sf), nil
 	}
@@ -180,12 +198,15 @@ func ScalarFuncs2Exprs(funcs []*ScalarFunction) []Expression {
 
 // Clone implements Expression interface.
 func (sf *ScalarFunction) Clone() Expression {
-	return &ScalarFunction{
+	newSf := &ScalarFunction{
 		FuncName: sf.FuncName,
 		RetType:  sf.RetType,
 		Function: sf.Function.Clone(),
 		hashcode: sf.hashcode,
 	}
+	newSf.OrigArgs = make([]Expression, len(newSf.GetArgs()))
+	copy(newSf.OrigArgs, newSf.GetArgs())
+	return newSf
 }
 
 // GetType implements Expression interface.
