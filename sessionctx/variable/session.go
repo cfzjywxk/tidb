@@ -518,6 +518,8 @@ func NewSessionVars() *SessionVars {
 		EnableNoopFuncs:             DefTiDBEnableNoopFuncs,
 		replicaRead:                 kv.ReplicaReadLeader,
 		AllowRemoveAutoInc:          DefTiDBAllowRemoveAutoInc,
+		PartExpressions:             make(map[int64]interface{}),
+		PartExpressionsSchemaVersion: make(map[int64]int64),
 	}
 	vars.Concurrency = Concurrency{
 		IndexLookupConcurrency:     DefIndexLookupConcurrency,
