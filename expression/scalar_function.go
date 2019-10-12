@@ -161,8 +161,9 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 		FuncName: model.NewCIStr(funcName),
 		RetType:  retType,
 		Function: f,
-		OrigArgs: f.getArgs(),
 	}
+	sf.OrigArgs = make([]Expression, len(sf.GetArgs()))
+	copy(sf.OrigArgs, sf.GetArgs())
 	if fold {
 		return FoldConstant(sf), nil
 	}
