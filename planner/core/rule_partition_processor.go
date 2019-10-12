@@ -134,7 +134,7 @@ func (s *partitionProcessor) prune(ds *DataSource) (LogicalPlan, error) {
 			break
 		}
 		// If the select condition would never be satisified, prune that partition.
-		pruned, err := s.canBePruned(ds.SCtx(), col, expr.Clone(), presolvedFilters)
+		pruned, err := s.canBePruned(ds.SCtx(), col, expr, presolvedFilters)
 		if err != nil {
 			return nil, err
 		}
