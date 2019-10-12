@@ -440,6 +440,10 @@ type SessionVars struct {
 	replicaRead kv.ReplicaReadType
 
 	PlannerSelectBlockAsName []model.CIStr
+
+	//
+	PartExpressions map[int64]interface{}
+	PartExpressionsSchemaVersion map[int64]int64
 }
 
 // PreparedParams contains the parameters of the current prepared statement when executing it.

@@ -111,6 +111,22 @@ func (s *partitionProcessor) prune(ds *DataSource) (LogicalPlan, error) {
 	partitionDefs := ds.table.Meta().Partition.Definitions
 
 	sctx := ds.SCtx()
+	var exprArr []expression.Expression
+	tableID := ds.table.Meta().ID
+	if cachedPartExprs, ok := sctx.GetSessionVars().PartExpressions[tableID]; ok {
+		if sctx.GetSessionVars().TxnCtx.SchemaVersion ==
+			sctx.GetSessionVars().PartExpressionsSchemaVersion[tableID] {
+			exprArr = cachedPartExprs.([]expression.Expression)
+		}
+	}
+	if exprArr == nil {
+		exprArr = make([]expression.Expression, len(partitionExprs))
+		for i, partExpr := range partitionExprs {
+			exprArr[i] = partExpr.Clone()
+		}
+		sctx.GetSessionVars().PartExpressions[tableID] = exprArr
+		sctx.GetSessionVars().PartExpressionsSchemaVersion[tableID] = sctx.GetSessionVars().TxnCtx.SchemaVersion
+	}
 	filterConds := make([]expression.Expression, len(ds.allConds))
 	copy(filterConds, ds.allConds)
 	filterConds = expression.PropagateConstant(sctx, filterConds)
@@ -129,7 +145,7 @@ func (s *partitionProcessor) prune(ds *DataSource) (LogicalPlan, error) {
 	// Rewrite data source to union all partitions, during which we may prune some
 	// partitions according to the filter conditions pushed to the DataSource.
 	children := make([]LogicalPlan, 0, len(pi.Definitions))
-	for i, expr := range partitionExprs {
+	for i, expr := range exprArr {
 		if alwaysFalse {
 			break
 		}
