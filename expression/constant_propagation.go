@@ -161,6 +161,11 @@ func (s *propConstSolver) propagateConstantEQ() {
 		for i, cond := range s.conditions {
 			if !visited[i] {
 				_, s.conditions[i] = ColumnSubstitutePartPrune(i == 0, cond, NewSchema(cols...), cons)
+				if i == 0 {
+					if sf, ok := cond.(*ScalarFunction); ok {
+						sf.ReostoreArgs()
+					}
+				}
 			}
 		}
 	}

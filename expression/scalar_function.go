@@ -38,6 +38,23 @@ type ScalarFunction struct {
 	RetType  *types.FieldType
 	Function builtinFunc
 	hashcode []byte
+
+	//
+	OrigArgs []Expression
+}
+
+func (sf *ScalarFunction) ReostoreArgs() error {
+	var err error
+	for i := range sf.GetArgs() {
+		sf.Function.getArgs()[i] = sf.OrigArgs[i]
+		if scalarFunc, ok := sf.Function.getArgs()[i].(*ScalarFunction); ok {
+			err = scalarFunc.ReostoreArgs()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return err
 }
 
 // VecEvalInt evaluates this expression in a vectorized manner.
@@ -144,6 +161,7 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 		FuncName: model.NewCIStr(funcName),
 		RetType:  retType,
 		Function: f,
+		OrigArgs: f.getArgs(),
 	}
 	if fold {
 		return FoldConstant(sf), nil
