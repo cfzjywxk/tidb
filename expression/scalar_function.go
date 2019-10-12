@@ -198,12 +198,15 @@ func ScalarFuncs2Exprs(funcs []*ScalarFunction) []Expression {
 
 // Clone implements Expression interface.
 func (sf *ScalarFunction) Clone() Expression {
-	return &ScalarFunction{
+	newSf := &ScalarFunction{
 		FuncName: sf.FuncName,
 		RetType:  sf.RetType,
 		Function: sf.Function.Clone(),
 		hashcode: sf.hashcode,
 	}
+	newSf.OrigArgs = make([]Expression, len(newSf.GetArgs()))
+	copy(newSf.OrigArgs, newSf.GetArgs())
+	return newSf
 }
 
 // GetType implements Expression interface.

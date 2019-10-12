@@ -151,12 +151,10 @@ func (s *partitionProcessor) prune(ds *DataSource) (LogicalPlan, error) {
 		}
 		// If the select condition would never be satisified, prune that partition.
 		pruned, err := s.canBePruned(ds.SCtx(), col, expr, presolvedFilters)
-		if i == 0 {
-			if sf, ok := expr.(*expression.ScalarFunction); ok {
-				restoreErr := sf.ReostoreArgs()
-				if restoreErr != nil {
-					return nil, restoreErr
-				}
+		if sf, ok := expr.(*expression.ScalarFunction); ok {
+			restoreErr := sf.ReostoreArgs()
+			if restoreErr != nil {
+				return nil, restoreErr
 			}
 		}
 		if err != nil {
