@@ -288,7 +288,7 @@ func FoldConstWithAllocator(allocator arena.Allocator, expr Expression) (Express
 			logutil.BgLogger().Debug("fold expression to constant", zap.String("expression", x.ExplainInfo()), zap.Error(err))
 			return expr, isDeferredConst
 		}
-		bytesArr := allocator.Alloc(constantSize)
+		bytesArr := allocator.AllocWithLen(constantSize, constantSize)
 		retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
 		retConstant.Value = value
 		retConstant.RetType = x.RetType
@@ -303,7 +303,7 @@ func FoldConstWithAllocator(allocator arena.Allocator, expr Expression) (Express
 		return retConstant, false
 	case *Constant:
 		if x.ParamMarker != nil {
-			bytesArr := allocator.Alloc(constantSize)
+			bytesArr := allocator.AllocWithLen(constantSize, constantSize)
 			retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
 			retConstant.Value = x.ParamMarker.GetUserVar()
 			retConstant.RetType = x.RetType
@@ -324,7 +324,7 @@ func FoldConstWithAllocator(allocator arena.Allocator, expr Expression) (Express
 				logutil.BgLogger().Debug("fold expression to constant", zap.String("expression", x.ExplainInfo()), zap.Error(err))
 				return expr, true
 			}
-			bytesArr := allocator.Alloc(constantSize)
+			bytesArr := allocator.AllocWithLen(constantSize, constantSize)
 			retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
 			retConstant.Value = value
 			retConstant.RetType = x.RetType
