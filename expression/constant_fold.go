@@ -15,9 +15,11 @@ package expression
 
 import (
 	"github.com/pingcap/parser/ast"
+	"github.com/pingcap/tidb/util/arena"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
+	"unsafe"
 )
 
 // specialFoldHandler stores functions for special UDF to constant fold
@@ -215,6 +217,121 @@ func foldConstant(expr Expression) (Expression, bool) {
 				return expr, true
 			}
 			return &Constant{Value: value, RetType: x.RetType, DeferredExpr: x.DeferredExpr}, true
+		}
+	}
+	return expr, false
+}
+
+var constantSize = int(unsafe.Sizeof(Constant{}))
+
+func FoldConstWithAllocator(allocator arena.Allocator, expr Expression) (Expression, bool) {
+	switch x := expr.(type) {
+	case *ScalarFunction:
+		if _, ok := unFoldableFunctions[x.FuncName.L]; ok {
+			return expr, false
+		}
+		if function := specialFoldHandler[x.FuncName.L]; function != nil {
+			return function(x)
+		}
+
+		args := x.GetArgs()
+		sc := x.GetCtx().GetSessionVars().StmtCtx
+		argIsConst := make([]bool, len(args))
+		hasNullArg := false
+		allConstArg := true
+		isDeferredConst := false
+		for i := 0; i < len(args); i++ {
+			foldedArg, isDeferred := foldConstant(args[i])
+			x.GetArgs()[i] = foldedArg
+			con, conOK := foldedArg.(*Constant)
+			argIsConst[i] = conOK
+			allConstArg = allConstArg && conOK
+			hasNullArg = hasNullArg || (conOK && con.Value.IsNull())
+			isDeferredConst = isDeferredConst || isDeferred
+		}
+		if !allConstArg {
+			if !hasNullArg || !sc.InNullRejectCheck || x.FuncName.L == ast.NullEQ {
+				return expr, isDeferredConst
+			}
+			constArgs := make([]Expression, len(args))
+			for i, arg := range args {
+				if argIsConst[i] {
+					constArgs[i] = arg
+				} else {
+					constArgs[i] = One
+				}
+			}
+			dummyScalarFunc, err := NewFunctionBase(x.GetCtx(), x.FuncName.L, x.GetType(), constArgs...)
+			if err != nil {
+				return expr, isDeferredConst
+			}
+			value, err := dummyScalarFunc.Eval(chunk.Row{})
+			if err != nil {
+				return expr, isDeferredConst
+			}
+			if value.IsNull() {
+				if isDeferredConst {
+					return &Constant{Value: value, RetType: x.RetType, DeferredExpr: x}, true
+				}
+				return &Constant{Value: value, RetType: x.RetType}, false
+			}
+			if isTrue, err := value.ToBool(sc); err == nil && isTrue == 0 {
+				if isDeferredConst {
+					return &Constant{Value: value, RetType: x.RetType, DeferredExpr: x}, true
+				}
+				return &Constant{Value: value, RetType: x.RetType}, false
+			}
+			return expr, isDeferredConst
+		}
+		value, err := x.Eval(chunk.Row{})
+		if err != nil {
+			logutil.BgLogger().Debug("fold expression to constant", zap.String("expression", x.ExplainInfo()), zap.Error(err))
+			return expr, isDeferredConst
+		}
+		bytesArr := allocator.Alloc(constantSize)
+		retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
+		retConstant.Value = value
+		retConstant.RetType = x.RetType
+		if isDeferredConst {
+			retConstant.DeferredExpr = x
+			//return &Constant{Value: value, RetType: x.RetType, DeferredExpr: x}, true
+			return retConstant, true
+		}
+		retConstant.DeferredExpr = nil
+		retConstant.ParamMarker = nil
+		//return &Constant{Value: value, RetType: x.RetType}, false
+		return retConstant, false
+	case *Constant:
+		if x.ParamMarker != nil {
+			bytesArr := allocator.Alloc(constantSize)
+			retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
+			retConstant.Value = x.ParamMarker.GetUserVar()
+			retConstant.RetType = x.RetType
+			retConstant.DeferredExpr = x.DeferredExpr
+			retConstant.ParamMarker = x.ParamMarker
+			/*
+			return &Constant{
+				Value:        x.ParamMarker.GetUserVar(),
+				RetType:      x.RetType,
+				DeferredExpr: x.DeferredExpr,
+				ParamMarker:  x.ParamMarker,
+			}, true
+			*/
+			return retConstant, true
+		} else if x.DeferredExpr != nil {
+			value, err := x.DeferredExpr.Eval(chunk.Row{})
+			if err != nil {
+				logutil.BgLogger().Debug("fold expression to constant", zap.String("expression", x.ExplainInfo()), zap.Error(err))
+				return expr, true
+			}
+			bytesArr := allocator.Alloc(constantSize)
+			retConstant := (*Constant)(unsafe.Pointer(&bytesArr[0]))
+			retConstant.Value = value
+			retConstant.RetType = x.RetType
+			retConstant.DeferredExpr = x.DeferredExpr
+			retConstant.ParamMarker = nil
+			//return &Constant{Value: value, RetType: x.RetType, DeferredExpr: x.DeferredExpr}, true
+			return retConstant, true
 		}
 	}
 	return expr, false

@@ -1265,6 +1265,7 @@ func (s *session) IsCachedExecOk(ctx context.Context, preparedStmt *plannercore.
 
 // ExecutePreparedStmt executes a prepared statement.
 func (s *session) ExecutePreparedStmt(ctx context.Context, stmtID uint32, args []types.Datum) (sqlexec.RecordSet, error) {
+	s.sessionVars.SolverMemAllocator.Reset()
 	s.PrepareTxnCtx(ctx)
 	var err error
 	s.sessionVars.StartTime = time.Now()

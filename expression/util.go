@@ -174,7 +174,8 @@ func ColumnSubstitute(expr Expression, schema *Schema, newExprs []Expression) Ex
 
 // ColumnSubstitutePartPrune same as ColumnSubstitute except that it will return if the
 // input expr is substituted, the newFunctionInternal is only called if its child is substituted
-func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema, newExprs []Expression) (bool, Expression) {
+func ColumnSubstitutePartPrune(sctx sessionctx.Context, isPartExpr bool,
+	expr Expression, schema *Schema, newExprs []Expression) (bool, Expression) {
 	switch v := expr.(type) {
 	case *Column:
 		id := schema.ColumnIndex(v)
@@ -192,14 +193,14 @@ func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema,
 	case *ScalarFunction:
 		if v.FuncName.L == ast.Cast {
 			newFunc := v.Clone().(*ScalarFunction)
-			_, newFunc.GetArgs()[0] = ColumnSubstitutePartPrune(isPartExpr, newFunc.GetArgs()[0], schema, newExprs)
+			_, newFunc.GetArgs()[0] = ColumnSubstitutePartPrune(sctx, isPartExpr, newFunc.GetArgs()[0], schema, newExprs)
 			return true, newFunc
 		}
 		substituted := false
 		if !isPartExpr {
 			newArgs := make([]Expression, 0, len(v.GetArgs()))
 			for _, arg := range v.GetArgs() {
-				changed, newFuncExpr := ColumnSubstitutePartPrune(isPartExpr, arg, schema, newExprs)
+				changed, newFuncExpr := ColumnSubstitutePartPrune(sctx, isPartExpr, arg, schema, newExprs)
 				if changed {
 					substituted = true
 				}
@@ -211,13 +212,14 @@ func ColumnSubstitutePartPrune(isPartExpr bool, expr Expression, schema *Schema,
 		} else {
 			for idx, arg := range v.GetArgs() {
 				var changed bool
-				changed, v.Function.getArgs()[idx] = ColumnSubstitutePartPrune(isPartExpr, arg, schema, newExprs)
+				changed, v.Function.getArgs()[idx] = ColumnSubstitutePartPrune(sctx, isPartExpr, arg, schema, newExprs)
 				if changed {
 					substituted = true
 				}
 			}
 			if substituted {
-				return true, FoldConstant(v)
+				retExpr, _ := FoldConstWithAllocator(sctx.GetSessionVars().SolverMemAllocator, expr)
+				return true, retExpr
 			}
 		}
 	}
