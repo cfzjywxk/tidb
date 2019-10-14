@@ -28,6 +28,8 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
+	"github.com/pingcap/tidb/util/logutil"
+	"runtime"
 	"unsafe"
 )
 
@@ -166,6 +168,10 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 	sf.FuncName = model.NewCIStr(funcName)
 	sf.RetType = retType
 	sf.Function = f
+	runtime.SetFinalizer(sf, func(newSf *ScalarFunction) {
+		logutil.BgLogger().Error("===[ray]=== Setfinalizer")
+		panic("scalar function get gc")
+	})
 
 	if fold {
 		return FoldConstant(sf), nil
