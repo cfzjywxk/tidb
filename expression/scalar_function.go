@@ -133,7 +133,8 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 			return nil, ErrFunctionsNoopImpl.GenWithStackByArgs(funcName)
 		}
 	}
-	//funcArgs := make([]Expression, len(args))
+	funcArgs := make([]Expression, len(args))
+	/*
 	argsDataSize := int(unsafe.Sizeof(args[0])) * len(args)
 	argsHeaderSize := int(unsafe.Sizeof(args))
 	totLen := argsHeaderSize + argsDataSize
@@ -143,6 +144,7 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 	funcArgsHeader.Data = uintptr(unsafe.Pointer(&buf[argsHeaderSize]))
 	funcArgsHeader.Len = len(args)
 	funcArgsHeader.Cap = len(args)
+	*/
 	copy(funcArgs, args)
 
 	f, err := fc.getFunction(ctx, funcArgs)
