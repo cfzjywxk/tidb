@@ -625,6 +625,7 @@ func (cc *clientConn) Run(ctx context.Context) {
 		}
 
 		cc.alloc.Reset()
+		cc.ctx.GetSessionVars().SolverMemAllocator.Reset()
 		// close connection when idle time is more than wait_timout
 		waitTimeout := cc.getSessionVarsWaitTimeout(ctx)
 		cc.pkt.setReadTimeout(time.Duration(waitTimeout) * time.Second)

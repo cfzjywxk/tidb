@@ -16,7 +16,6 @@ package expression
 import (
 	"bytes"
 	"fmt"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/model"
@@ -29,6 +28,8 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
+	"reflect"
+	"unsafe"
 )
 
 // ScalarFunction is the function that returns a value.
@@ -132,8 +133,18 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 			return nil, ErrFunctionsNoopImpl.GenWithStackByArgs(funcName)
 		}
 	}
-	funcArgs := make([]Expression, len(args))
+	//funcArgs := make([]Expression, len(args))
+	argsDataSize := int(unsafe.Sizeof(args[0])) * len(args)
+	argsHeaderSize := int(unsafe.Sizeof(args))
+	totLen := argsHeaderSize + argsDataSize
+	buf := ctx.GetSessionVars().SolverMemAllocator.AllocWithLen(totLen, totLen)
+	funcArgs := *(*[]Expression)(unsafe.Pointer(&buf[0]))
+	funcArgsHeader := (*reflect.SliceHeader)(unsafe.Pointer(&funcArgs))
+	funcArgsHeader.Data = uintptr(unsafe.Pointer(&buf[argsHeaderSize]))
+	funcArgsHeader.Len = len(args)
+	funcArgsHeader.Cap = len(args)
 	copy(funcArgs, args)
+
 	f, err := fc.getFunction(ctx, funcArgs)
 	if err != nil {
 		return nil, err

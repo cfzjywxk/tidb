@@ -37,6 +37,7 @@ import (
 	"github.com/pingcap/tidb/metrics"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/types"
+	"github.com/pingcap/tidb/util/arena"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/execdetails"
 	"github.com/pingcap/tidb/util/logutil"
@@ -440,6 +441,9 @@ type SessionVars struct {
 	replicaRead kv.ReplicaReadType
 
 	PlannerSelectBlockAsName []model.CIStr
+
+	// for expression propagation like execution
+	SolverMemAllocator arena.Allocator
 }
 
 // PreparedParams contains the parameters of the current prepared statement when executing it.
@@ -514,6 +518,7 @@ func NewSessionVars() *SessionVars {
 		EnableNoopFuncs:             DefTiDBEnableNoopFuncs,
 		replicaRead:                 kv.ReplicaReadLeader,
 		AllowRemoveAutoInc:          DefTiDBAllowRemoveAutoInc,
+		SolverMemAllocator:          arena.NewAllocator(2 * 1024 * 1024),
 	}
 	vars.Concurrency = Concurrency{
 		IndexLookupConcurrency:     DefIndexLookupConcurrency,
