@@ -28,7 +28,6 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/hack"
-	"reflect"
 	"unsafe"
 )
 
@@ -111,6 +110,7 @@ func (sf *ScalarFunction) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("\"%s\"", sf)), nil
 }
 
+var scalarFunctionSize = int(unsafe.Sizeof(ScalarFunction{}))
 // newFunctionImpl creates a new scalar function or constant.
 func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType *types.FieldType, args ...Expression) (Expression, error) {
 	if retType == nil {
@@ -154,11 +154,19 @@ func newFunctionImpl(ctx sessionctx.Context, fold bool, funcName string, retType
 	if builtinRetTp := f.getRetTp(); builtinRetTp.Tp != mysql.TypeUnspecified || retType.Tp == mysql.TypeUnspecified {
 		retType = builtinRetTp
 	}
+	/*
 	sf := &ScalarFunction{
 		FuncName: model.NewCIStr(funcName),
 		RetType:  retType,
 		Function: f,
 	}
+	*/
+	bytesArr := ctx.GetSessionVars().SolverMemAllocator.AllocWithLen(scalarFunctionSize, scalarFunctionSize)
+	sf := (*ScalarFunction)(unsafe.Pointer(&bytesArr[0]))
+	sf.FuncName = model.NewCIStr(funcName)
+	sf.RetType = retType
+	sf.Function = f
+
 	if fold {
 		return FoldConstant(sf), nil
 	}
