@@ -24,6 +24,7 @@ import (
 	"github.com/pingcap/parser/opcode"
 	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/expression"
+	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/planner/property"
 	"github.com/pingcap/tidb/privilege"
 	"github.com/pingcap/tidb/sessionctx"
@@ -153,7 +154,7 @@ func TryFastPlan(ctx sessionctx.Context, node ast.Node) Plan {
 				tableDual.SetSchema(fp.Schema())
 				return tableDual.Init(ctx, &property.StatsInfo{})
 			}
-			if x.LockTp == ast.SelectLockForUpdate {
+			if x.LockTp == ast.SelectLockForUpdate || x.LockTp == ast.SelectLockForUpdateNoWait {
 				// Locking of rows for update using SELECT FOR UPDATE only applies when autocommit
 				// is disabled (either by beginning transaction with START TRANSACTION or by setting
 				// autocommit to 0. If autocommit is enabled, the rows matching the specification are not locked.
@@ -163,6 +164,9 @@ func TryFastPlan(ctx sessionctx.Context, node ast.Node) Plan {
 					fp.Lock = true
 					fp.IsForUpdate = true
 					fp.LockWaitTime = sessVars.LockWaitTimeout
+					if x.LockTp == ast.SelectLockForUpdateNoWait {
+						fp.LockWaitTime = kv.LockNoWait
+					}
 				}
 			}
 			return fp
