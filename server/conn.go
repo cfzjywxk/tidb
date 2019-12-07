@@ -1016,6 +1016,7 @@ func insertDataWithCommit(ctx context.Context, prevData,
 		// push into commit task queue
 		err = loadDataInfo.EnqOneTask(ctx)
 		if err != nil {
+			logutil.Logger(ctx).Error("[for debug] insertDataWithCommit quit", zap.Error(err))
 			return prevData, err
 		}
 		curData = prevData

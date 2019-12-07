@@ -392,6 +392,7 @@ func (s *session) FieldList(tableName string) ([]*ast.ResultField, error) {
 
 func (s *session) doCommit(ctx context.Context) error {
 	if !s.txn.Valid() {
+		logutil.Logger(ctx).Error("[for debug] txn already invalid?? return directly")
 		return nil
 	}
 	defer func() {

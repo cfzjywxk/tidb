@@ -547,6 +547,8 @@ func (t *tableCommon) AddRecord(ctx sessionctx.Context, r []types.Datum, opts ..
 		return 0, err
 	}
 	ctx.StmtAddDirtyTableOP(table.DirtyTableAddRow, t.physicalTableID, recordID)
+	logutil.BgLogger().Info("[for debug] dirty ops AddRow", zap.Int64("recordID", recordID),
+		zap.Int("len txn", txn.Len()))
 
 	if shouldWriteBinlog(ctx) {
 		// For insert, TiDB and Binlog can use same row and schema.

@@ -35,7 +35,8 @@ import (
 
 var (
 	null          = []byte("NULL")
-	taskQueueSize = 64 // the maximum number of pending tasks to commit in queue
+	//taskQueueSize = 64 // the maximum number of pending tasks to commit in queue
+	taskQueueSize = 4 // the maximum number of pending tasks to commit in queue
 )
 
 // LoadDataExec represents a load data executor.
@@ -125,6 +126,7 @@ type LoadDataInfo struct {
 	commitTaskQueue chan CommitTask
 	StopCh          chan struct{}
 	QuitCh          chan struct{}
+	tasks uint64
 }
 
 // GetRows getter for rows
@@ -176,6 +178,9 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 			select {
 			case e.commitTaskQueue <- e.MakeCommitTask():
 				sendOk = true
+				logutil.Logger(ctx).Info("[for debug] task succ",
+					zap.Uint64("cnt", e.curBatchCnt), zap.Int("rows", len(e.row)),
+					zap.Int("current task len", len(e.commitTaskQueue)))
 			case <-e.QuitCh:
 				err = errors.New("EnqOneTask forced to quit")
 				logutil.Logger(ctx).Error("EnqOneTask forced to quit, possible commitWork error")
@@ -184,6 +189,8 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 		}
 		// reset rows buffer, will reallocate buffer but NOT reuse
 		e.SetMaxRowsInBatch(e.maxRowsInBatch)
+	} else {
+		logutil.Logger(ctx).Error("[for debug] e.curBatchCnt zero????????????????????")
 	}
 	return err
 }
@@ -227,6 +234,7 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 				zap.Stack("stack"))
 		}
 		if err != nil || r != nil {
+			logutil.Logger(ctx).Error("CommitWork defer print error", zap.Error(err))
 			e.ForceQuit()
 		}
 		if err != nil {
@@ -243,12 +251,14 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 			break
 		case commitTask, ok := <-e.commitTaskQueue:
 			if ok {
+				logutil.Logger(ctx).Info("[for debug]CommitWork got one task", zap.Int("left len", len(e.commitTaskQueue)))
 				err = e.CommitOneTask(ctx, commitTask)
 				if err != nil {
 					break
 				}
 				tasks++
 			} else {
+				logutil.Logger(ctx).Info("[for debug]CommitWork receive from channel not ok quit end")
 				end = true
 				break
 			}
@@ -428,11 +438,15 @@ func (e *LoadDataInfo) InsertData(ctx context.Context, prevData, curData []byte)
 func (e *LoadDataInfo) CheckAndInsertOneBatch(ctx context.Context, rows [][]types.Datum, cnt uint64) error {
 	var err error
 	if cnt == 0 {
+		logutil.Logger(ctx).Error("[for debug] ??????????? CheckAndInsertOneBatch cnt = 0????")
 		return err
 	}
+	logutil.Logger(ctx).Info("[for debug] CheckAndInsertOneBatch", zap.Uint64("cnt", cnt),
+		zap.Int("len rows", len(rows)))
 	e.ctx.GetSessionVars().StmtCtx.AddRecordRows(cnt)
 	err = e.batchCheckAndInsert(ctx, rows[0:cnt], e.addRecordLD)
 	if err != nil {
+		logutil.Logger(ctx).Error("[for debug] CheckAndInsertOneBatch error", zap.Error(err))
 		return err
 	}
 	return err
@@ -480,10 +494,12 @@ func (e *LoadDataInfo) colsToRow(ctx context.Context, cols []field) []types.Datu
 
 func (e *LoadDataInfo) addRecordLD(ctx context.Context, row []types.Datum) (int64, error) {
 	if row == nil {
+		logutil.Logger(ctx).Error("[for debug] addRecordLD row nil")
 		return 0, nil
 	}
 	h, err := e.addRecord(ctx, row)
 	if err != nil {
+		logutil.Logger(ctx).Error("[for debug] addRecordLD error", zap.Error(err))
 		e.handleWarning(err)
 	}
 	return h, nil

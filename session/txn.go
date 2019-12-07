@@ -422,6 +422,7 @@ func (s *session) StmtCommit() error {
 	defer s.txn.cleanup()
 	st := &s.txn
 	var count int
+	sets := uint64(0)
 	err := kv.WalkMemBuffer(st.buf, func(k kv.Key, v []byte) error {
 		failpoint.Inject("mockStmtCommitError", func(val failpoint.Value) {
 			if val.(bool) {
@@ -436,8 +437,11 @@ func (s *session) StmtCommit() error {
 		if len(v) == 0 {
 			return st.Transaction.Delete(k)
 		}
+		sets++
 		return st.Transaction.Set(k, v)
 	})
+	logutil.BgLogger().Info("[for debug] StmtCommit", zap.Uint64("sets", sets),
+		zap.Int("len entries", st.buf.Len()), zap.Any("buf", st.buf))
 	if err != nil {
 		st.doNotCommit = err
 		return err

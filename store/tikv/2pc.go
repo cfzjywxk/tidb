@@ -196,7 +196,7 @@ func sendTxnHeartBeat(bo *Backoffer, store *tikvStore, primary []byte, startTS, 
 	}
 }
 
-func (c *twoPhaseCommitter) initKeysAndMutations() error {
+func (c *twoPhaseCommitter) initKeysAndMutations(ctx context.Context) error {
 	var (
 		keys    [][]byte
 		size    int
@@ -257,6 +257,8 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 		size += entrySize
 		return nil
 	})
+	logutil.Logger(ctx).Info("[for debug] after walk mem buf, len(keys)", zap.Int("len keys", len(keys)),
+		zap.Int("put", putCnt))
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -288,7 +290,7 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 	const logSize = 4 * 1024 * 1024 // 4MB
 	if len(keys) > logEntryCount || size > logSize {
 		tableID := tablecodec.DecodeTableID(keys[0])
-		logutil.BgLogger().Info("[BIG_TXN]",
+		logutil.Logger(ctx).Info("[BIG_TXN]",
 			zap.Uint64("con", c.connID),
 			zap.Int64("table ID", tableID),
 			zap.Int("size", size),
@@ -1012,6 +1014,7 @@ func (c *twoPhaseCommitter) executeAndWriteFinishBinlog(ctx context.Context) err
 
 // execute executes the two-phase commit protocol.
 func (c *twoPhaseCommitter) execute(ctx context.Context) error {
+	logutil.Logger(ctx).Info("[for debug] 2pc commiter entered", zap.Int("keys", len(c.keys)))
 	defer func() {
 		// Always clean up all written keys if the txn does not commit.
 		c.mu.RLock()
@@ -1096,6 +1099,11 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) error {
 	start = time.Now()
 	commitBo := NewBackoffer(ctx, CommitMaxBackoff).WithVars(c.txn.vars)
 	err = c.commitKeys(commitBo, c.keys)
+	if err == nil {
+		logutil.Logger(ctx).Info("[for debug] commit keys succ", zap.Int("len keys", len(c.keys)))
+	} else {
+		logutil.Logger(ctx).Error("[for debug] commit keys fail", zap.Int("len keys", len(c.keys)), zap.Error(err))
+	}
 	commitDetail.CommitTime = time.Since(start)
 	if commitBo.totalSleep > 0 {
 		atomic.AddInt64(&commitDetail.CommitBackoffTime, int64(commitBo.totalSleep)*int64(time.Millisecond))

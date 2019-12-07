@@ -287,12 +287,15 @@ func (txn *tikvTxn) Commit(ctx context.Context) error {
 		if err != nil {
 			return errors.Trace(err)
 		}
+	} else {
+		logutil.Logger(ctx).Warn("[for debug] reuse commiter?")
 	}
 	defer committer.ttlManager.close()
-	if err := committer.initKeysAndMutations(); err != nil {
+	if err := committer.initKeysAndMutations(ctx); err != nil {
 		return errors.Trace(err)
 	}
 	if len(committer.keys) == 0 {
+		logutil.Logger(ctx).Info("[for debug] tikvTxn.Commit keys zero? return nil")
 		return nil
 	}
 

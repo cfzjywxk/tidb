@@ -817,12 +817,15 @@ func (e *InsertValues) batchCheckAndInsert(ctx context.Context, rows [][]types.D
 	}
 
 	// append warnings and get no duplicated error rows
+	added := uint64(0)
 	for i, r := range toBeCheckedRows {
 		skip := false
 		if r.handleKey != nil {
 			_, err := txn.Get(ctx, r.handleKey.newKV.key)
 			if err == nil {
 				e.ctx.GetSessionVars().StmtCtx.AppendWarning(r.handleKey.dupErr)
+				logutil.Logger(ctx).Error("[for debug] ??????????? BatchCheckAndInsert duplicated key???",
+					zap.ByteString("key", r.handleKey.newKV.key))
 				continue
 			}
 			if !kv.IsErrNotFound(err) {
@@ -835,6 +838,8 @@ func (e *InsertValues) batchCheckAndInsert(ctx context.Context, rows [][]types.D
 				// If duplicate keys were found in BatchGet, mark row = nil.
 				e.ctx.GetSessionVars().StmtCtx.AppendWarning(uk.dupErr)
 				skip = true
+				logutil.Logger(ctx).Error("[for debug] uniqueKeys conflict skip",
+					zap.ByteString("key", uk.newKV.key), zap.ByteString("val", uk.newKV.value))
 				break
 			}
 			if !kv.IsErrNotFound(err) {
@@ -846,12 +851,16 @@ func (e *InsertValues) batchCheckAndInsert(ctx context.Context, rows [][]types.D
 		// There may be duplicate keys inside the insert statement.
 		if !skip {
 			e.ctx.GetSessionVars().StmtCtx.AddCopiedRows(1)
-			_, err = addRecord(ctx, rows[i])
+			_, err := addRecord(ctx, rows[i])
 			if err != nil {
+				logutil.Logger(ctx).Error("[for debug]addRecord error", zap.Error(err))
 				return err
 			}
+			added++
 		}
 	}
+	logutil.Logger(ctx).Info("[for debug] BatchCheckAndInsert results", zap.Uint64("added", added), zap.Int("len", len(rows)))
+	logutil.Logger(ctx).Info("[for debug] membuf", zap.Int("txn len", txn.Len()))
 	return nil
 }
 
@@ -866,6 +875,7 @@ func (e *InsertValues) addRecord(ctx context.Context, row []types.Datum) (int64,
 	h, err := e.Table.AddRecord(e.ctx, row, table.WithCtx(ctx))
 	txn.DelOption(kv.PresumeKeyNotExists)
 	if err != nil {
+		logutil.Logger(ctx).Error("addRecord error", zap.Error(err))
 		return 0, err
 	}
 	if e.lastInsertID != 0 {
