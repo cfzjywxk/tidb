@@ -37,7 +37,7 @@ import (
 var (
 	null          = []byte("NULL")
 	//taskQueueSize = 64 // the maximum number of pending tasks to commit in queue
-	taskQueueSize = 4 // the maximum number of pending tasks to commit in queue
+	taskQueueSize = 16 // the maximum number of pending tasks to commit in queue
 )
 
 // LoadDataExec represents a load data executor.
