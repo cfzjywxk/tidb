@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
@@ -252,11 +253,16 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 		case commitTask, ok := <-e.commitTaskQueue:
 			if ok {
 				logutil.Logger(ctx).Info("[for debug]CommitWork got one task", zap.Int("left len", len(e.commitTaskQueue)))
+				start := time.Now()
 				err = e.CommitOneTask(ctx, commitTask)
 				if err != nil {
 					break
 				}
 				tasks++
+				logutil.Logger(ctx).Info("commit one task success",
+					zap.Duration("commit time usage", time.Since(start)),
+					zap.Uint64("keys processed", commitTask.cnt),
+					zap.Uint64("tasks processed", tasks))
 			} else {
 				logutil.Logger(ctx).Info("[for debug]CommitWork receive from channel not ok quit end")
 				end = true
@@ -501,6 +507,7 @@ func (e *LoadDataInfo) addRecordLD(ctx context.Context, row []types.Datum) (int6
 	if err != nil {
 		logutil.Logger(ctx).Error("[for debug] addRecordLD error", zap.Error(err))
 		e.handleWarning(err)
+		return 0, err
 	}
 	return h, nil
 }
