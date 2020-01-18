@@ -1192,7 +1192,13 @@ func (cc *clientConn) handleLoadStats(ctx context.Context, loadStatsInfo *execut
 // There is a special query `load data` that does not return result, which is handled differently.
 // Query `load stats` does not return result either.
 func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
+	handleQueryStartTime := time.Now()
+	logutil.Logger(ctx).Info("[for debug] handleQuery startTime", zap.Time("handleQueryStartTime", handleQueryStartTime))
 	rss, err := cc.ctx.Execute(ctx, sql)
+	EndExecute := time.Now()
+	logutil.Logger(ctx).Info("[for debug] Execute time", zap.Time("EndExecute", EndExecute),
+		zap.Int64("EndExecute - handleQueryStartTime ms",
+		EndExecute.Sub(handleQueryStartTime).Milliseconds()))
 	if err != nil {
 		metrics.ExecuteErrorCounter.WithLabelValues(metrics.ExecuteErrorToLabel(err)).Inc()
 		return err
@@ -1210,6 +1216,10 @@ func (cc *clientConn) handleQuery(ctx context.Context, sql string) (err error) {
 		} else {
 			err = cc.writeMultiResultset(ctx, rss, false)
 		}
+		EndWriteResultSet := time.Now()
+		logutil.Logger(ctx).Info("[for debug] EndWriteResultSet",
+			zap.Time("EndWriteResultSet", EndWriteResultSet),
+			zap.Int64("EndWriteResultSet - EndExecute", EndWriteResultSet.Sub(EndExecute).Milliseconds()))
 	} else {
 		loadDataInfo := cc.ctx.Value(executor.LoadDataVarKey)
 		if loadDataInfo != nil {
