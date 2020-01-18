@@ -15,10 +15,12 @@ package executor
 
 import (
 	"context"
-
 	"github.com/cznic/mathutil"
 	"github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/util/chunk"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
+	"time"
 )
 
 // ExplainExec represents an explain executor.
@@ -82,9 +84,11 @@ func (e *ExplainExec) generateExplainInfo(ctx context.Context) ([][]string, erro
 				break
 			}
 		}
+		st := time.Now()
 		if err := e.analyzeExec.Close(); err != nil {
 			return nil, err
 		}
+		logutil.Logger(ctx).Info("[for debug] close cost", zap.Int64("analyzeExec close(ms)", time.Since(st).Milliseconds()))
 	}
 	if err := e.explain.RenderResult(); err != nil {
 		return nil, err

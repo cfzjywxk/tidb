@@ -16,6 +16,8 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
 	"time"
 
 	"github.com/opentracing/opentracing-go"
@@ -143,7 +145,10 @@ func (e *TableReaderExecutor) Next(ctx context.Context, req *chunk.Chunk) error 
 	}
 	if e.runtimeStats != nil {
 		start := time.Now()
-		defer func() { e.runtimeStats.Record(time.Since(start), req.NumRows()) }()
+		defer func() {
+			e.runtimeStats.Record(time.Since(start), req.NumRows())
+			logutil.Logger(ctx).Info("[for debug] TableReaderExecutor Next", zap.Int64("Next cost(ms)", time.Since(start).Milliseconds()))
+		}()
 	}
 	if err := e.resultHandler.nextChunk(ctx, req); err != nil {
 		e.feedback.Invalidate()
