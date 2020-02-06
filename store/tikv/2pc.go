@@ -932,7 +932,8 @@ func (actionCommit) handleSingleBatch(c *twoPhaseCommitter, bo *Backoffer, batch
 			logutil.Logger(bo.ctx).Error("2PC failed commit key after primary key committed",
 				zap.Error(err),
 				zap.Uint64("txnStartTS", c.startTS),
-				zap.Uint64("commitTS", c.commitTS))
+				zap.Uint64("commitTS", c.commitTS),
+				zap.ByteStrings("keys", batch.keys))
 			return errors.Trace(err)
 		}
 		// The transaction maybe rolled back by concurrent transactions.
