@@ -291,6 +291,9 @@ func (lr *LockResolver) ResolveLocks(bo *Backoffer, callerStartTS uint64, locks 
 	// TODO: Maybe put it in LockResolver and share by all txns.
 	cleanTxns := make(map[uint64]map[RegionVerID]struct{})
 	pushed := make([]uint64, 0, len(locks))
+	logutil.Logger(bo.ctx).Info("[for debug] sleep 8s before resolve locks")
+	time.Sleep(8 * time.Second)
+	logutil.Logger(bo.ctx).Info("[for debug] sleep 8s finished start to resolve locks")
 	for _, l := range locks {
 		status, err := lr.getTxnStatusFromLock(bo, l, callerStartTS)
 		if err != nil {
@@ -421,6 +424,10 @@ func (lr *LockResolver) getTxnStatusFromLock(bo *Backoffer, l *Lock, callerStart
 		if err := bo.Backoff(boTxnNotFound, err); err != nil {
 			logutil.BgLogger().Warn("getTxnStatusFromLock backoff fail", zap.Error(err))
 		}
+		logutil.Logger(bo.ctx).Warn("resolve lock txn not found",
+			zap.ByteString("pk", l.Primary), zap.ByteString("key", l.Key),
+			zap.Uint64("txn ID", l.TxnID), zap.Uint64("lock TTL", l.TTL),
+			zap.Int32("lock type", int32(l.LockType)), zap.String("lock str", l.String()))
 
 		if lr.store.GetOracle().UntilExpired(l.TxnID, l.TTL) <= 0 {
 			rollbackIfNotExist = true

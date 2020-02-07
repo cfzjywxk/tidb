@@ -1034,6 +1034,13 @@ func (mvcc *MVCCLevelDB) CheckTxnStatus(primaryKey []byte, lockTS, callerStartTS
 	rollbackIfNotExist bool) (ttl uint64, commitTS uint64, action kvrpcpb.Action, err error) {
 	mvcc.mu.Lock()
 	defer mvcc.mu.Unlock()
+	defer func() {
+		logutil.BgLogger().Info("[for debug] CheckTxnStatus results", zap.ByteString("pk", primaryKey),
+			zap.Uint64("lockTS", lockTS), zap.Uint64("callerStartTS", callerStartTS),
+			zap.Uint64("currentTS", currentTS), zap.Bool("rollbackIfNotExist", rollbackIfNotExist),
+			zap.Uint64("result:ttl", ttl), zap.Uint64("result:commitTS", commitTS),
+			zap.Int32("results: action", int32(action)), zap.Error(err))
+	}()
 
 	action = kvrpcpb.Action_NoAction
 

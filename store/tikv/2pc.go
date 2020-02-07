@@ -648,8 +648,10 @@ func (tm *ttlManager) keepAlive(c *twoPhaseCommitter) {
 			}
 
 			newTTL := uptime + atomic.LoadUint64(&ManagedLockTTL)
-			logutil.BgLogger().Info("send TxnHeartBeat",
-				zap.Uint64("startTS", c.startTS), zap.Uint64("newTTL", newTTL))
+			/*
+				logutil.BgLogger().Info("send TxnHeartBeat",
+					zap.Uint64("startTS", c.startTS), zap.Uint64("newTTL", newTTL))
+			*/
 			startTime := time.Now()
 			_, err = sendTxnHeartBeat(bo, c.store, c.primary(), c.startTS, newTTL)
 			if err != nil {
