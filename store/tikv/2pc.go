@@ -695,6 +695,7 @@ func (action actionPessimisticLock) handleSingleBatch(c *twoPhaseCommitter, bo *
 			timeLeft := action.LockWaitTime - (time.Since(lockWaitStartTime)).Milliseconds()
 			if timeLeft <= 0 {
 				req.PessimisticLock().WaitTimeout = kv.LockNoWait
+				logutil.Logger(bo.ctx).Debug("[for debug] lock wait timeout", zap.Uint64("StartTS", c.startTS))
 			} else {
 				req.PessimisticLock().WaitTimeout = timeLeft
 			}
@@ -771,6 +772,10 @@ func (action actionPessimisticLock) handleSingleBatch(c *twoPhaseCommitter, bo *
 			}
 			if action.LockCtx.PessimisticLockWaited != nil {
 				atomic.StoreInt32(action.LockCtx.PessimisticLockWaited, 1)
+			}
+		} else {
+			for _, l := range locks {
+				logutil.Logger(bo.ctx).Debug("[for debug] lock expired already skip lock timeout check", zap.Stringer("lock", l))
 			}
 		}
 

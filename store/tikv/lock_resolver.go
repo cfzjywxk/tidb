@@ -298,6 +298,10 @@ func (lr *LockResolver) ResolveLocks(bo *Backoffer, callerStartTS uint64, locks 
 			err = errors.Trace(err)
 			return msBeforeTxnExpired.value(), nil, err
 		}
+		logutil.Logger(bo.ctx).Debug("[for debug]",
+			zap.Uint64("status.ttl", status.ttl),
+			zap.Uint64("status.CommitTS", status.commitTS),
+			zap.Stringer("action_type", status.action))
 
 		if status.ttl == 0 {
 			tikvLockResolverCountWithExpired.Inc()
@@ -320,6 +324,10 @@ func (lr *LockResolver) ResolveLocks(bo *Backoffer, callerStartTS uint64, locks 
 			// Update the txn expire time.
 			msBeforeLockExpired := lr.store.GetOracle().UntilExpired(l.TxnID, status.ttl)
 			msBeforeTxnExpired.update(msBeforeLockExpired)
+			logutil.Logger(bo.ctx).Debug("[for debug]",
+				zap.Int64("msBeforeLockExpired", msBeforeLockExpired),
+				zap.Int64("msBeforeTxnExpired.txnExpireTime", msBeforeTxnExpired.txnExpire),
+				zap.Bool("msBeforeTxnExpired.initialized", msBeforeTxnExpired.initialized))
 			// In the write conflict scenes, callerStartTS is set to 0 to avoid unnecessary push minCommitTS operation.
 			if callerStartTS > 0 {
 				if status.action != kvrpcpb.Action_MinCommitTSPushed {
