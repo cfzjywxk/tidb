@@ -808,3 +808,33 @@ func (s *testCommitterSuite) TestPessimisticLockPrimary(c *C) {
 	waitErr := <-doneCh
 	c.Assert(ErrLockWaitTimeout.Equal(waitErr), IsTrue)
 }
+
+func (s *testCommitterSuite) TestResolveReadOnlyTxnLock(c *C) {
+	k1 := kv.Key("a")
+	txn1 := s.begin(c)
+	txn1.SetOption(kv.Pessimistic, true)
+	// txn1 lock k1
+	lockCtx := &kv.LockCtx{ForUpdateTS: txn1.startTS, WaitStartTime: time.Now()}
+	err := txn1.LockKeys(context.Background(), lockCtx, k1)
+	c.Assert(err, IsNil)
+
+	// txn2 wants to lock k1, blocked by txn1
+	start := time.Now()
+	doneCh := make(chan error)
+	go func() {
+		txn2 := s.begin(c)
+		txn2.SetOption(kv.Pessimistic, true)
+		lockCtx2 := &kv.LockCtx{ForUpdateTS: txn2.startTS, WaitStartTime: time.Now(), LockWaitTime: kv.LockAlwaysWait}
+		waitErr := txn2.LockKeys(context.Background(), lockCtx2, k1)
+		doneCh <- waitErr
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// txn1 commit k1, txn2 should get lock immediately
+	err = txn1.Commit(context.Background())
+	c.Assert(err, IsNil)
+	waitErr := <-doneCh
+	c.Assert(waitErr, IsNil)
+	// the managed lock ttl is 3 seconds
+	c.Assert(time.Since(start), Less, time.Second*1)
+}

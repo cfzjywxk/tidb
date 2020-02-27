@@ -437,6 +437,12 @@ func (lr *LockResolver) getTxnStatusFromLock(bo *Backoffer, l *Lock, callerStart
 				return TxnStatus{}, nil
 			}
 			rollbackIfNotExist = true
+		} else {
+			// this pessimistic lock may come from a read-only transaction
+			// which will not write commit/rollback record
+			if l.LockType == kvrpcpb.Op_PessimisticLock {
+				return TxnStatus{ttl: l.TTL}, nil
+			}
 		}
 	}
 }
