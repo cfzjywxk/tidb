@@ -11,7 +11,7 @@ require (
 	github.com/dgraph-io/ristretto v0.0.1
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/dustin/go-humanize v1.0.0 // indirect
-	github.com/go-sql-driver/mysql v0.0.0-20170715192408-3955978caca4
+	github.com/go-sql-driver/mysql v1.4.1
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/groupcache v0.0.0-20190702054246-869f871628b6 // indirect
 	github.com/golang/protobuf v1.3.3
@@ -20,7 +20,7 @@ require (
 	github.com/google/pprof v0.0.0-20190930153522-6ce02741cba3
 	github.com/google/uuid v1.1.1
 	github.com/gorilla/context v1.1.1 // indirect
-	github.com/gorilla/mux v1.6.2
+	github.com/gorilla/mux v1.7.3
 	github.com/gorilla/websocket v1.4.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.0.1-0.20190118093823-f849b5445de4
 	github.com/jeremywohl/flatten v0.0.0-20190921043622-d936035e55cf
@@ -63,8 +63,8 @@ require (
 	go.uber.org/zap v1.13.0
 	golang.org/x/crypto v0.0.0-20191206172530-e9b2fee46413 // indirect
 	golang.org/x/lint v0.0.0-20200130185559-910be7a94367 // indirect
-	golang.org/x/net v0.0.0-20191002035440-2ec189313ef0
-	golang.org/x/sys v0.0.0-20191210023423-ac6580df4449
+	golang.org/x/net v0.0.0-20200202094626-16171245cfb2
+	golang.org/x/sys v0.0.0-20200113162924-86b910548bc1
 	golang.org/x/text v0.3.2
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4 // indirect
 	golang.org/x/tools v0.0.0-20200216192241-b320d3a0f5a2
@@ -77,3 +77,5 @@ require (
 )
 
 go 1.13
+
+replace github.com/pingcap/pd => github.com/cfzjywxk/pd v1.1.0-beta.0.20200304023209-e764b701b2e1
