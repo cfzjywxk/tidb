@@ -2030,7 +2030,9 @@ func (s *session) PrepareTSFuture(ctx context.Context) {
 	if !s.txn.validOrPending() {
 		txnFuture := s.getTxnFuture(ctx)
 		s.txn.changeInvalidToPending(txnFuture)
-		s.GetSessionVars().TxnCtx.SetStmtFuture(txnFuture.future)
+		if s.GetSessionVars().IsPessimisticReadConsistency() {
+			s.GetSessionVars().TxnCtx.SetStmtFuture(s.getTxnFuture(ctx).future)
+		}
 		return
 	}
 	if s.txn.Valid() && s.GetSessionVars().IsPessimisticReadConsistency() {
