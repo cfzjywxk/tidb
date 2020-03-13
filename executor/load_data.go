@@ -126,6 +126,7 @@ type LoadDataInfo struct {
 	commitTaskQueue chan CommitTask
 	StopCh          chan struct{}
 	QuitCh          chan struct{}
+	RowsCh          chan [][]types.Datum
 }
 
 // GetRows getter for rows
@@ -144,10 +145,18 @@ func (e *LoadDataInfo) CloseTaskQueue() {
 }
 
 // InitQueues initialize task queue and error report queue
-func (e *LoadDataInfo) InitQueues() {
+func (e *LoadDataInfo) InitQueues(batchLimit uint64) {
 	e.commitTaskQueue = make(chan CommitTask, taskQueueSize)
 	e.StopCh = make(chan struct{}, 2)
 	e.QuitCh = make(chan struct{})
+	e.RowsCh = make(chan [][]types.Datum, taskQueueSize+2)
+	for i := 0; i < taskQueueSize+2; i++ {
+		rows := make([][]types.Datum, 0, batchLimit)
+		for i := 0; uint64(i) < batchLimit; i++ {
+			rows = append(rows, make([]types.Datum, len(e.Table.Cols())))
+		}
+		e.RowsCh <- rows
+	}
 }
 
 // StartStopWatcher monitor StopCh to force quit
@@ -183,7 +192,7 @@ func (e *LoadDataInfo) EnqOneTask(ctx context.Context) error {
 				return err
 			}
 		}
-		// reset rows buffer, will reallocate buffer but NOT reuse
+		// reset rows buffer
 		e.SetMaxRowsInBatch(e.maxRowsInBatch)
 	}
 	return err
@@ -250,11 +259,13 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 					break
 				}
 				tasks++
+				e.RowsCh <- commitTask.rows
 				logutil.Logger(ctx).Info("commit one task success",
 					zap.Duration("commit time usage", time.Since(start)),
 					zap.Uint64("keys processed", commitTask.cnt),
 					zap.Uint64("tasks processed", tasks),
-					zap.Int("tasks in queue", len(e.commitTaskQueue)))
+					zap.Int("tasks in queue", len(e.commitTaskQueue)),
+					zap.Int("RowsCh rows buffer", len(e.RowsCh)))
 			} else {
 				end = true
 			}
@@ -270,11 +281,8 @@ func (e *LoadDataInfo) CommitWork(ctx context.Context) error {
 // SetMaxRowsInBatch sets the max number of rows to insert in a batch.
 func (e *LoadDataInfo) SetMaxRowsInBatch(limit uint64) {
 	e.maxRowsInBatch = limit
-	e.rows = make([][]types.Datum, 0, limit)
-	for i := 0; uint64(i) < limit; i++ {
-		e.rows = append(e.rows, make([]types.Datum, len(e.Table.Cols())))
-	}
 	e.curBatchCnt = 0
+	e.rows = <-e.RowsCh
 }
 
 // getValidData returns prevData and curData that starts from starting symbol.
