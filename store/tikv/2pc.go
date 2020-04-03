@@ -802,6 +802,9 @@ func (action actionPessimisticLock) handleSingleBatch(c *twoPhaseCommitter, bo *
 			time.Sleep(300 * time.Millisecond)
 			return kv.ErrWriteConflict
 		})
+		if c.connID == 10 {
+			time.Sleep(2 * time.Millisecond)
+		}
 		resp, err := c.store.SendReq(bo, req, batch.region, readTimeoutShort)
 		if err != nil {
 			return errors.Trace(err)
