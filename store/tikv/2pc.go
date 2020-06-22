@@ -17,6 +17,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"github.com/pingcap/parser/mysql"
+	"github.com/pingcap/tidb/table"
+	"github.com/pingcap/tidb/types"
 	"math"
 	"sort"
 	"sync"
@@ -24,6 +27,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ngaut/log"
 	"github.com/opentracing/opentracing-go"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
@@ -32,6 +36,7 @@ import (
 	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/meta"
 	"github.com/pingcap/tidb/metrics"
 	"github.com/pingcap/tidb/sessionctx/binloginfo"
 	"github.com/pingcap/tidb/store/tikv/oracle"
@@ -1304,7 +1309,7 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 		return errors.Trace(err)
 	}
 	c.commitTS = commitTS
-	if err = c.checkSchemaValid(); err != nil {
+	if err = c.checkSchemaValid(ctx); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -1375,47 +1380,383 @@ func (c *twoPhaseCommitter) stripNoNeedCommitKeys() {
 	c.mutations = m.subRange(0, newIdx)
 }
 
-const amendableType = uint64((1 << model.ActionAddColumn) | (1 << model.ActionDropColumn))
+const amendableType = (1 << model.ActionAddColumn) | (1 << model.ActionDropColumn) | (memBufAmendType)
+const memBufAmendType = uint64(1 << model.ActionAddIndex)
+const (
+	AmendNone int = iota
 
-func (c *twoPhaseCommitter) checkTblAmendable(tblIDs []int64, actionTypes []uint64) bool {
-	for i := range tblIDs {
-		if actionTypes[i]&(^amendableType) != 0 {
-			return false
-		}
-	}
-	return true
+	// For add index
+	AmendNeedAddDelete
+	AmendNeedAddDeleteAndInsert
+	AmendNeedAddInsert
+
+	// For drop index
+	AmendNeedRemoveInsert
+	AmendNeedRemoveInsertAndDelete
+	AmendNeedRemoveDelete
+)
+
+var ConstOpAddIndex = map[model.SchemaState]map[model.SchemaState]int{
+	model.StateNone: {
+		model.StateDeleteOnly:          AmendNeedAddDelete,
+		model.StateWriteOnly:           AmendNeedAddDeleteAndInsert,
+		model.StateWriteReorganization: AmendNeedAddDeleteAndInsert,
+		model.StatePublic:              AmendNeedAddDeleteAndInsert,
+	},
+	model.StateDeleteOnly: {
+		model.StateWriteOnly:           AmendNeedAddInsert,
+		model.StateWriteReorganization: AmendNeedAddInsert,
+		model.StatePublic:              AmendNeedAddInsert,
+	},
+	model.StateWriteOnly: {
+		model.StateWriteReorganization: AmendNone,
+		model.StatePublic:              AmendNone,
+	},
+	model.StateWriteReorganization: {
+		model.StatePublic: AmendNone,
+	},
 }
 
-func (c *twoPhaseCommitter) amendForSchemaChange(tblIds []int64, actionTypes []uint64) (bool, error) {
-	amenable := c.checkTblAmendable(tblIds, actionTypes)
-	if !amenable {
-		return false, nil
+var ConstOpDropIndex = map[model.SchemaState]map[model.SchemaState]int{
+	model.StatePublic: {
+		model.StateWriteOnly:            AmendNone,
+		model.StateDeleteOnly:           AmendNeedRemoveInsert,
+		model.StateDeleteReorganization: AmendNeedRemoveInsert,
+		model.StateNone:                 AmendNeedRemoveInsertAndDelete,
+	},
+	model.StateWriteOnly: {
+		model.StateDeleteOnly:           AmendNeedRemoveInsert,
+		model.StateDeleteReorganization: AmendNeedRemoveInsert,
+		model.StateNone:                 AmendNeedRemoveInsertAndDelete,
+	},
+	model.StateDeleteOnly: {
+		model.StateWriteReorganization: AmendNone,
+		model.StateNone:                AmendNeedRemoveDelete,
+	},
+	model.StateDeleteReorganization: {
+		model.StateNone: AmendNeedRemoveDelete,
+	},
+}
+
+// amendOperations has all amend operations for each related table having schema changes
+type amendOperations struct {
+	tblMap map[int64][]amendOperation
+}
+
+func NewAmendOperations() *amendOperations {
+	res := &amendOperations{
+		tblMap: make(map[int64][]amendOperation),
 	}
-	// TODO Try to amend "add index" and "drop index" schema change for pessimistic transaction commit
+	return res
+}
+
+func (a *amendOperations) GenAddIndexAmendOps(ctx context.Context, dbID, phyTblID int64,
+	tblAtStart, tblAtCommit *model.TableInfo) ([]amendOperation, error) {
+	res := make([]amendOperation, 0, 4)
+	op := amendOperation{}
+	op.dbID = dbID
+	op.phyTblID = phyTblID
+	op.tblInfoAtStart = tblAtStart
+	op.tblInfoAtCommit = tblAtCommit
+	for _, idxInfoAtCommit := range tblAtCommit.Indices {
+		op.idxID = idxInfoAtCommit.ID
+		var startIdxInfo *model.IndexInfo
+		for _, oldIndexInfo := range tblAtStart.Indices {
+			if oldIndexInfo.ID == idxInfoAtCommit.ID {
+				startIdxInfo = oldIndexInfo
+				break
+			}
+		}
+		if startIdxInfo == nil {
+			op.indexInfoAtStart = nil
+			op.AmendOpType = ConstOpAddIndex[model.StateNone][idxInfoAtCommit.State]
+		} else {
+			op.indexInfoAtStart = startIdxInfo
+			op.AmendOpType = ConstOpAddIndex[startIdxInfo.State][idxInfoAtCommit.State]
+		}
+		op.indexInfoAtCommit = idxInfoAtCommit
+		// TODO now index column MUST be found in old table columns
+		for _, idxCol := range idxInfoAtCommit.Columns {
+			var oldColInfo *model.ColumnInfo
+			for _, colInfo := range tblAtStart.Columns {
+				if tblAtCommit.Columns[idxCol.Offset].ID == colInfo.ID {
+					op.relatedOldIdxCols = append(op.relatedOldIdxCols, colInfo)
+					oldColInfo = colInfo
+					break
+				}
+			}
+			if oldColInfo == nil {
+				log.Warnf("column=%v not found in original schema", *idxCol)
+				return nil, table.ErrUnsupportedOp
+			}
+			// TODO add index on generated column is not supported by now
+			if oldColInfo.IsGenerated() {
+				log.Warnf("column=%v is generated column", *oldColInfo)
+				return nil, table.ErrUnsupportedOp
+			}
+		}
+		res = append(res, op)
+	}
+	return res, nil
+}
+
+// GenTableAmendOps generates amend operations for each table with related schema change
+func (a *amendOperations) GenTableAmendOps(ctx context.Context, dbID, phyTblID int64, tblInfoAtStart, tblInfoAtCommit *model.TableInfo) error {
+	// Currently only add index is considered
+	ops, err := a.GenAddIndexAmendOps(ctx, dbID, phyTblID, tblInfoAtStart, tblInfoAtCommit)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	log.Infof("[for debug]GenTableAmendOps ops=%v", ops)
+	if _, ok := a.tblMap[phyTblID]; !ok {
+		a.tblMap[phyTblID] = make([]amendOperation, 0, 4)
+	}
+	a.tblMap[phyTblID] = append(a.tblMap[phyTblID], ops...)
+	return nil
+}
+
+func isDeleteOp(keyOp pb.Op) bool {
+	return keyOp == pb.Op_Del
+}
+
+func isInsertOp(keyOp pb.Op) bool {
+	return keyOp == pb.Op_Put || keyOp == pb.Op_Insert
+}
+
+func (a *amendOperations) GenOneMut(amendOp *amendOperation, kvMaps map[string][]byte, key []byte,
+	kvHandle kv.Handle) ([]byte, []byte, error) {
+	idxPrefix := tablecodec.EncodeTableIndexPrefix(amendOp.phyTblID, amendOp.idxID)
+	colMap := make(map[int64]*types.FieldType)
+	for _, oldCol := range amendOp.tblInfoAtStart.Columns {
+		colMap[oldCol.ID] = &oldCol.FieldType
+	}
+	rowMap, err := tablecodec.DecodeRow(kvMaps[string(key)], colMap, time.UTC)
+	if err != nil {
+		panic("decode err")
+	}
+	// Debug test code
+	log.Warnf("[for debug] rowMap=%v", rowMap)
+	for k, v := range rowMap {
+		log.Warnf("[for debug] decoded k=%v, v=%v, idxPrefix=%v", k, v, idxPrefix)
+	}
+	idxVals := make([]types.Datum, 0, len(amendOp.indexInfoAtCommit.Columns))
+	for _, oldCol := range amendOp.relatedOldIdxCols {
+		idxVals = append(idxVals, rowMap[oldCol.ID])
+	}
+
+	// TODO does stmtCtx matters here if a nil is used ?
+	// Generate index key buf
+	newIdxKey, distinct, err := tablecodec.GenIndexKey(nil, amendOp.tblInfoAtCommit, amendOp.indexInfoAtCommit,
+		idxPrefix, idxVals, kvHandle, nil)
+	if err != nil {
+		panic(err)
+	}
+	log.Warnf("newIdxKey=%v", newIdxKey)
+
+	// Generate index value buf
+	var containsNonBinaryString bool
+	for _, idxCol := range amendOp.indexInfoAtCommit.Columns {
+		col := amendOp.tblInfoAtCommit.Columns[idxCol.Offset]
+		if col.EvalType() == types.ETString && !mysql.HasBinaryFlag(col.Flag) {
+			containsNonBinaryString = true
+			break
+		}
+	}
+	newIdxVal, err := tablecodec.GenIndexValue(nil, amendOp.tblInfoAtCommit, amendOp.indexInfoAtCommit, containsNonBinaryString,
+		distinct, false, idxVals, kvHandle)
+	if err != nil {
+		panic(err)
+	}
+	log.Warnf("newIdxVal=%v", newIdxVal)
+	return newIdxKey, newIdxVal, nil
+}
+
+func (a *amendOperations) GenMutations(KeyOp pb.Op, key []byte, kvMaps map[string][]byte) (committerMutations, error) {
+	var res committerMutations
+	phyTblId := tablecodec.DecodeTableID(key)
+	if phyTblId == 0 {
+		return res, errors.Errorf("decode key=%x table id results in zero", key)
+	}
+	kvHandle, err := tablecodec.DecodeRowKey(key)
+	if err != nil {
+		panic("decode row key error")
+	}
+	if amendOpArr, ok := a.tblMap[phyTblId]; ok {
+		log.Warnf("[for debug] processing key=%x table ops=%v", key, amendOpArr)
+		for _, amendOp := range amendOpArr {
+			if amendOp.AmendOpType == AmendNone {
+				continue
+			}
+			switch amendOp.AmendOpType {
+			case AmendNone:
+			case AmendNeedAddDelete:
+				if isInsertOp(KeyOp) {
+					continue
+				}
+			case AmendNeedAddDeleteAndInsert:
+			case AmendNeedAddInsert:
+				if isDeleteOp(KeyOp) {
+					continue
+				}
+			case AmendNeedRemoveInsert:
+				return res, table.ErrUnsupportedOp
+			case AmendNeedRemoveInsertAndDelete:
+				return res, table.ErrUnsupportedOp
+			case AmendNeedRemoveDelete:
+				return res, table.ErrUnsupportedOp
+			}
+			newIdxKey, newIdxVal, err := a.GenOneMut(&amendOp, kvMaps, key, kvHandle)
+			if err != nil {
+				panic(err)
+			}
+			res.ops = append(res.ops, KeyOp)
+			res.keys = append(res.keys, newIdxKey)
+			res.values = append(res.values, newIdxVal)
+			res.isPessimisticLock = append(res.isPessimisticLock, false)
+		}
+	}
+	return res, nil
+}
+
+// amendOperation represents one amend operation related to a specific index
+type amendOperation struct {
+	dbID              int64
+	phyTblID          int64
+	idxID             int64
+	AmendOpType       int
+	tblInfoAtStart    *model.TableInfo
+	tblInfoAtCommit   *model.TableInfo
+	indexInfoAtStart  *model.IndexInfo
+	indexInfoAtCommit *model.IndexInfo
+	relatedOldIdxCols []*model.ColumnInfo
+}
+
+func mergeMutations(org committerMutations, delta committerMutations) (newMutations committerMutations) {
+	newMutations.ops = append(org.ops, delta.ops...)
+	newMutations.keys = append(org.keys, delta.keys...)
+	newMutations.values = append(org.values, delta.values...)
+	newMutations.isPessimisticLock = append(org.isPessimisticLock, delta.isPessimisticLock...)
+	return
+}
+
+func (c *twoPhaseCommitter) amendTxnMem(ctx context.Context, info *amendOperations) error {
+	kvKeys := make([]kv.Key, 0, len(c.mutations.keys))
+	for _, byteKey := range c.mutations.keys {
+		if tablecodec.IsIndexKey(byteKey) {
+			continue
+		}
+		kvKeys = append(kvKeys, byteKey)
+	}
+	// BatchGet the old row values
+	log.Warnf("[for debug] forUpdateTS=%v", c.forUpdateTS)
+
+	kvMaps, err := c.txn.BatchGet(ctx, kvKeys)
+	if err != nil {
+		panic(err)
+	}
+	var newMutations committerMutations
+	for i, key := range c.mutations.keys {
+		if c.mutations.ops[i] == pb.Op_Put || c.mutations.ops[i] == pb.Op_Del || c.mutations.ops[i] == pb.Op_Insert {
+			log.Warnf("[for debug] processing key=%v", key)
+			mutations, err := info.GenMutations(c.mutations.ops[i], key, kvMaps)
+			if err != nil {
+				return err
+			}
+			newMutations = mergeMutations(newMutations, mutations)
+		}
+	}
+	// Do prewrite newMuations
+	prewriteBo := NewBackoffer(ctx, PrewriteMaxBackoff).WithVars(c.txn.vars)
+	log.Warnf("[for debug] amend prewrite mutations=%v", newMutations)
+	err = c.prewriteMutations(prewriteBo, newMutations)
+	if err != nil {
+		panic(err)
+	}
+	// Change the commit mutations
+	c.mutations = mergeMutations(c.mutations, newMutations)
+	return nil
+}
+
+func (c *twoPhaseCommitter) amendTxnForSchemaChange(ctx context.Context, startTS uint64, commitTs uint64,
+	dbIDs, tblIDs []int64, actionTypes []uint64) (bool, error) {
+	// Get schema meta for startTS and commitTS
+	startTSVer := kv.Version{Ver: startTS}
+	snapStartTS, err := c.txn.store.GetSnapshot(startTSVer)
+	if err != nil {
+		return false, err
+	}
+	startTSMeta := meta.NewSnapshotMeta(snapStartTS)
+	commitTSVer := kv.Version{Ver: commitTs}
+	snapCommitTS, err := c.txn.store.GetSnapshot(commitTSVer)
+	if err != nil {
+		return false, err
+	}
+	commitTSMeta := meta.NewSnapshotMeta(snapCommitTS)
+
+	// Generate amend operations for each table
+	var needAmendMem bool
+	amendOps := NewAmendOperations()
+	for i, tblID := range tblIDs {
+		if actionTypes[i]&(^amendableType) != 0 {
+			return false, nil
+		}
+		// Partition table is not supported now
+		tblInfoAtStart, err := startTSMeta.GetTable(dbIDs[i], tblID)
+		if err != nil {
+			return false, err
+		}
+		if tblInfoAtStart.Partition != nil {
+			return false, table.ErrUnsupportedOp
+		}
+
+		tblInfoAtCommit, err := commitTSMeta.GetTable(dbIDs[i], tblID)
+		if err != nil {
+			return false, err
+		}
+		if actionTypes[i]&(memBufAmendType) != 0 {
+			needAmendMem = true
+			err := amendOps.GenTableAmendOps(ctx, dbIDs[i], tblID, tblInfoAtStart, tblInfoAtCommit)
+			if err != nil {
+				return false, nil
+			}
+		}
+	}
+
+	// Try to amend these changes
+	if needAmendMem {
+		log.Warnf("[for debug] begin to amend mem ops=%v", amendOps)
+		err := c.amendTxnMem(ctx, amendOps)
+		if err != nil {
+			return false, nil
+		}
+		return true, nil
+	}
 	return true, nil
 }
 
 type schemaLeaseChecker interface {
-	Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []uint64, bool, error)
+	Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []int64, []uint64, bool, error)
 }
 
-func (c *twoPhaseCommitter) checkSchemaValid() error {
+func (c *twoPhaseCommitter) checkSchemaValid(ctx context.Context) error {
 	checker, ok := c.txn.us.GetOption(kv.SchemaChecker).(schemaLeaseChecker)
 	if ok {
-		tblIDs, actionTypes, amendable, err := checker.Check(c.commitTS, c.isPessimistic)
+		dbIDs, tblIDs, actionTypes, amendable, err := checker.Check(c.commitTS, c.isPessimistic && c.connID > 0)
+		if c.isPessimistic && c.connID > 0 {
+			log.Warnf("[for debug] check res dbIDs=%v tblIDs=%v actionTypes=%v amendable=%v err=%v", dbIDs, tblIDs, actionTypes, amendable, err)
+		}
 		if err != nil {
-			if amendable && c.isPessimistic {
+			if amendable && c.isPessimistic && c.connID > 0 {
 				// Try to amend for pessimistic transactions
-				ok, amendErr := c.amendForSchemaChange(tblIDs, actionTypes)
+				ok, amendErr := c.amendTxnForSchemaChange(ctx, c.startTS, c.commitTS, dbIDs, tblIDs, actionTypes)
 				if amendErr != nil {
 					logutil.BgLogger().Warn("Amend data has failed",
 						zap.Uint64("connID", c.connID), zap.Error(amendErr))
 				} else if ok {
 					logutil.BgLogger().Info("Amend data successfully for pessimistic txn commit",
 						zap.Uint64("connID", c.connID), zap.Uint64("startTS", c.startTS),
-						zap.Uint64("commitTS", c.commitTS),
-						zap.Int64s("table ids", tblIDs),
-						zap.Uint64s("action types", actionTypes))
+						zap.Uint64("commitTS", c.commitTS), zap.Int64s("db ids", dbIDs),
+						zap.Int64s("table ids", tblIDs), zap.Uint64s("action types", actionTypes))
 					return nil
 				}
 			}
