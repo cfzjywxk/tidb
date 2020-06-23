@@ -1460,42 +1460,45 @@ func (a *amendOperations) GenAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 	op.tblInfoAtCommit = tblAtCommit
 	for _, idxInfoAtCommit := range tblAtCommit.Indices {
 		op.idxID = idxInfoAtCommit.ID
-		var startIdxInfo *model.IndexInfo
+		var idxInfoAtStart *model.IndexInfo
 		for _, oldIndexInfo := range tblAtStart.Indices {
 			if oldIndexInfo.ID == idxInfoAtCommit.ID {
-				startIdxInfo = oldIndexInfo
+				idxInfoAtStart = oldIndexInfo
 				break
 			}
 		}
-		if startIdxInfo == nil {
+		// Try to find index with "add index" state change
+		if idxInfoAtStart == nil {
 			op.indexInfoAtStart = nil
 			op.AmendOpType = ConstOpAddIndex[model.StateNone][idxInfoAtCommit.State]
-		} else {
-			op.indexInfoAtStart = startIdxInfo
-			op.AmendOpType = ConstOpAddIndex[startIdxInfo.State][idxInfoAtCommit.State]
+		} else if idxInfoAtCommit.State > idxInfoAtStart.State {
+			op.indexInfoAtStart = idxInfoAtStart
+			op.AmendOpType = ConstOpAddIndex[idxInfoAtStart.State][idxInfoAtCommit.State]
 		}
 		op.indexInfoAtCommit = idxInfoAtCommit
-		// TODO now index column MUST be found in old table columns
-		for _, idxCol := range idxInfoAtCommit.Columns {
-			var oldColInfo *model.ColumnInfo
-			for _, colInfo := range tblAtStart.Columns {
-				if tblAtCommit.Columns[idxCol.Offset].ID == colInfo.ID {
-					op.relatedOldIdxCols = append(op.relatedOldIdxCols, colInfo)
-					oldColInfo = colInfo
-					break
+		if op.AmendOpType != AmendNone {
+			// TODO now index column MUST be found in old table columns
+			for _, idxCol := range idxInfoAtCommit.Columns {
+				var oldColInfo *model.ColumnInfo
+				for _, colInfo := range tblAtStart.Columns {
+					if tblAtCommit.Columns[idxCol.Offset].ID == colInfo.ID {
+						op.relatedOldIdxCols = append(op.relatedOldIdxCols, colInfo)
+						oldColInfo = colInfo
+						break
+					}
+				}
+				if oldColInfo == nil {
+					log.Warnf("column=%v not found in original schema", *idxCol)
+					return nil, table.ErrUnsupportedOp
+				}
+				// TODO add index on generated column is not supported by now
+				if oldColInfo.IsGenerated() {
+					log.Warnf("column=%v is generated column", *oldColInfo)
+					return nil, table.ErrUnsupportedOp
 				}
 			}
-			if oldColInfo == nil {
-				log.Warnf("column=%v not found in original schema", *idxCol)
-				return nil, table.ErrUnsupportedOp
-			}
-			// TODO add index on generated column is not supported by now
-			if oldColInfo.IsGenerated() {
-				log.Warnf("column=%v is generated column", *oldColInfo)
-				return nil, table.ErrUnsupportedOp
-			}
+			res = append(res, op)
 		}
-		res = append(res, op)
 	}
 	return res, nil
 }
@@ -1571,11 +1574,12 @@ func (a *amendOperations) GenOneMut(amendOp *amendOperation, kvMaps map[string][
 	return newIdxKey, newIdxVal, nil
 }
 
-func (a *amendOperations) GenMutations(KeyOp pb.Op, key []byte, kvMaps map[string][]byte) (committerMutations, error) {
-	var res committerMutations
+func (a *amendOperations) GenMutations(KeyOp pb.Op, key []byte, kvMaps map[string][]byte) (committerMutations, committerMutations, error) {
+	var resNewMutations committerMutations
+	var resOldMutations committerMutations
 	phyTblId := tablecodec.DecodeTableID(key)
 	if phyTblId == 0 {
-		return res, errors.Errorf("decode key=%x table id results in zero", key)
+		return resNewMutations, resOldMutations, errors.Errorf("decode key=%x table id results in zero", key)
 	}
 	kvHandle, err := tablecodec.DecodeRowKey(key)
 	if err != nil {
@@ -1593,29 +1597,31 @@ func (a *amendOperations) GenMutations(KeyOp pb.Op, key []byte, kvMaps map[strin
 				if isInsertOp(KeyOp) {
 					continue
 				}
+				fallthrough
 			case AmendNeedAddDeleteAndInsert:
+				fallthrough
 			case AmendNeedAddInsert:
 				if isDeleteOp(KeyOp) {
 					continue
 				}
+				newIdxKey, newIdxVal, err := a.GenOneMut(&amendOp, kvMaps, key, kvHandle)
+				if err != nil {
+					panic(err)
+				}
+				resNewMutations.ops = append(resNewMutations.ops, KeyOp)
+				resNewMutations.keys = append(resNewMutations.keys, newIdxKey)
+				resNewMutations.values = append(resNewMutations.values, newIdxVal)
+				resNewMutations.isPessimisticLock = append(resNewMutations.isPessimisticLock, false)
 			case AmendNeedRemoveInsert:
-				return res, table.ErrUnsupportedOp
+				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
 			case AmendNeedRemoveInsertAndDelete:
-				return res, table.ErrUnsupportedOp
+				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
 			case AmendNeedRemoveDelete:
-				return res, table.ErrUnsupportedOp
+				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
 			}
-			newIdxKey, newIdxVal, err := a.GenOneMut(&amendOp, kvMaps, key, kvHandle)
-			if err != nil {
-				panic(err)
-			}
-			res.ops = append(res.ops, KeyOp)
-			res.keys = append(res.keys, newIdxKey)
-			res.values = append(res.values, newIdxVal)
-			res.isPessimisticLock = append(res.isPessimisticLock, false)
 		}
 	}
-	return res, nil
+	return resNewMutations, resOldMutations, nil
 }
 
 // amendOperation represents one amend operation related to a specific index
@@ -1649,30 +1655,36 @@ func (c *twoPhaseCommitter) amendTxnMem(ctx context.Context, info *amendOperatio
 	}
 	// BatchGet the old row values
 	log.Warnf("[for debug] forUpdateTS=%v", c.forUpdateTS)
-
 	kvMaps, err := c.txn.BatchGet(ctx, kvKeys)
 	if err != nil {
 		panic(err)
 	}
 	var newMutations committerMutations
+	var oldMutations committerMutations
 	for i, key := range c.mutations.keys {
 		if c.mutations.ops[i] == pb.Op_Put || c.mutations.ops[i] == pb.Op_Del || c.mutations.ops[i] == pb.Op_Insert {
 			log.Warnf("[for debug] processing key=%v", key)
-			mutations, err := info.GenMutations(c.mutations.ops[i], key, kvMaps)
+			resNewMuts, resOldMuts, err := info.GenMutations(c.mutations.ops[i], key, kvMaps)
 			if err != nil {
 				return err
 			}
-			newMutations = mergeMutations(newMutations, mutations)
+			newMutations = mergeMutations(newMutations, resNewMuts)
+			oldMutations = mergeMutations(oldMutations, resOldMuts)
 		}
 	}
-	// Do prewrite newMuations
-	prewriteBo := NewBackoffer(ctx, PrewriteMaxBackoff).WithVars(c.txn.vars)
-	log.Warnf("[for debug] amend prewrite mutations=%v", newMutations)
-	err = c.prewriteMutations(prewriteBo, newMutations)
-	if err != nil {
-		panic(err)
+	// Do prewrite some newMuations for ActionNeedAddXXX for add index
+	if len(newMutations.keys) > 0 {
+		prewriteBo := NewBackoffer(ctx, PrewriteMaxBackoff).WithVars(c.txn.vars)
+		log.Warnf("[for debug] amend prewrite mutations=%v", newMutations)
+		err = c.prewriteMutations(prewriteBo, newMutations)
+		if err != nil {
+			panic(err)
+		}
 	}
+	// TODO do rollback some oldMutations for ActionNeedRemoveXXX for drop index
 	// Change the commit mutations
+	if len(oldMutations.keys) > 0 {
+	}
 	c.mutations = mergeMutations(c.mutations, newMutations)
 	return nil
 }
