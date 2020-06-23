@@ -1009,7 +1009,7 @@ func GenIndexValue(sc *stmtctx.StatementContext, tblInfo *model.TableInfo, idxIn
 		idxValCap := 1 + 1 + 2 + h.Len() + len(rowRestoredValue)
 		idxVal = make([]byte, 1, idxValCap)
 		if !h.IsInt() && distinct {
-			idxVal = encodeCommonHandle(idxVal, h)
+			idxVal = EncodeCommonHandle(idxVal, h)
 		}
 		idxVal = append(idxVal, rowRestoredValue...)
 		tailLen := 0
@@ -1093,10 +1093,11 @@ func EncodeHandleInUniqueIndexValue(h kv.Handle, isUntouched bool) []byte {
 	if isUntouched {
 		untouchedFlag = 1
 	}
-	return encodeCommonHandle([]byte{untouchedFlag}, h)
+	return EncodeCommonHandle([]byte{untouchedFlag}, h)
 }
 
-func encodeCommonHandle(idxVal []byte, h kv.Handle) []byte {
+// EncodeCommonHandle encodes handle key
+func EncodeCommonHandle(idxVal []byte, h kv.Handle) []byte {
 	idxVal = append(idxVal, CommonHandleFlag)
 	hLen := uint16(len(h.Encoded()))
 	idxVal = append(idxVal, byte(hLen>>8), byte(hLen))

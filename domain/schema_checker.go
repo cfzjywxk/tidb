@@ -44,23 +44,23 @@ func NewSchemaChecker(do *Domain, schemaVer int64, relatedTableIDs []int64) *Sch
 }
 
 // Check checks the validity of the schema version.
-func (s *SchemaChecker) Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []uint64, bool, error) {
+func (s *SchemaChecker) Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []int64, []uint64, bool, error) {
 	schemaOutOfDateRetryInterval := atomic.LoadInt64(&SchemaOutOfDateRetryInterval)
 	schemaOutOfDateRetryTimes := int(atomic.LoadInt32(&SchemaOutOfDateRetryTimes))
 	for i := 0; i < schemaOutOfDateRetryTimes; i++ {
-		tblIDs, typeActions, CheckResult := s.SchemaValidator.Check(txnTS, s.schemaVer, s.relatedTableIDs, getAllChangedInfo)
+		dbIDs, tblIDs, typeActions, CheckResult := s.SchemaValidator.Check(txnTS, s.schemaVer, s.relatedTableIDs, getAllChangedInfo)
 		switch CheckResult {
 		case ResultSucc:
-			return nil, nil, false, nil
+			return nil, nil, nil, false, nil
 		case ResultFail:
 			metrics.SchemaLeaseErrorCounter.WithLabelValues("changed").Inc()
 			amendable := getAllChangedInfo && (len(tblIDs) > 0)
-			return tblIDs, typeActions, amendable, ErrInfoSchemaChanged
+			return dbIDs, tblIDs, typeActions, amendable, ErrInfoSchemaChanged
 		case ResultUnknown:
 			time.Sleep(time.Duration(schemaOutOfDateRetryInterval))
 		}
 
 	}
 	metrics.SchemaLeaseErrorCounter.WithLabelValues("outdated").Inc()
-	return nil, nil, false, ErrInfoSchemaExpired
+	return nil, nil, nil, false, ErrInfoSchemaExpired
 }

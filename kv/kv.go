@@ -56,6 +56,8 @@ const (
 	ReplicaRead
 	// Set task ID
 	TaskID
+	// SchemaAmender is used to amend mutations for pessimistic transactions
+	SchemaAmender
 )
 
 // Priority value for transaction priority.

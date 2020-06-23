@@ -42,9 +42,9 @@ type SchemaValidator interface {
 	// The latest schemaVer is valid within leaseGrantTime plus lease duration.
 	// Add the changed table IDs to the new schema information,
 	// which is produced when the oldSchemaVer is updated to the newSchemaVer.
-	Update(leaseGrantTime uint64, oldSchemaVer, newSchemaVer int64, changedTableIDs []int64, changedActionTypes []uint64)
+	Update(leaseGrantTime uint64, oldSchemaVer, newSchemaVer int64, change *relatedSchemaChange)
 	// Check is it valid for a transaction to use schemaVer and related tables, at timestamp txnTS.
-	Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64, getAllInfo bool) ([]int64, []uint64, checkResult)
+	Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64, getAllInfo bool) ([]int64, []int64, []uint64, checkResult)
 	// Stop stops checking the valid of transaction.
 	Stop()
 	// Restart restarts the schema validator after it is stopped.
@@ -56,9 +56,10 @@ type SchemaValidator interface {
 }
 
 type deltaSchemaInfo struct {
-	schemaVersion  int64
-	relatedIDs     []int64
-	relatedActions []uint64
+	schemaVersion    int64
+	relatedSchemaIDS []int64
+	relatedIDs       []int64
+	relatedActions   []uint64
 }
 
 type schemaValidator struct {
@@ -121,7 +122,7 @@ func (s *schemaValidator) Reset() {
 	s.deltaSchemaInfos = s.deltaSchemaInfos[:0]
 }
 
-func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, changedTableIDs []int64, changedActionTypes []uint64) {
+func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, change *relatedSchemaChange) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 
@@ -138,42 +139,50 @@ func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, cha
 
 	// Update the schema deltaItem information.
 	if currVer != oldVer {
+		var tblIDs []int64
+		var actionTypes []uint64
+		if change != nil {
+			s.enqueue(currVer, change)
+			tblIDs = change.tblIDS
+			actionTypes = change.actionTypes
+		}
 		logutil.BgLogger().Debug("update schema validator", zap.Int64("oldVer", oldVer),
-			zap.Int64("currVer", currVer), zap.Int64s("changedTableIDs", changedTableIDs),
-			zap.Uint64s("changedActionTypes", changedActionTypes))
-		s.enqueue(currVer, changedTableIDs, changedActionTypes)
+			zap.Int64("currVer", currVer), zap.Int64s("changedTableIDs", tblIDs),
+			zap.Uint64s("changedActionTypes", actionTypes))
 	}
 }
 
 // isRelatedTablesChanged returns the result whether relatedTableIDs is changed
 // from usedVer to the latest schema version.
 // NOTE, this function should be called under lock!
-func (s *schemaValidator) isRelatedTablesChanged(currVer int64, tableIDs []int64, getAllInfo bool) ([]int64, []uint64, bool) {
+func (s *schemaValidator) isRelatedTablesChanged(currVer int64, tableIDs []int64, getAllInfo bool) (*relatedSchemaChange, bool) {
 	if len(s.deltaSchemaInfos) == 0 {
 		metrics.LoadSchemaCounter.WithLabelValues(metrics.SchemaValidatorCacheEmpty).Inc()
 		logutil.BgLogger().Info("schema change history is empty", zap.Int64("currVer", currVer))
-		return nil, nil, true
+		return nil, true
 	}
 	newerDeltas := s.findNewerDeltas(currVer)
 	if len(newerDeltas) == len(s.deltaSchemaInfos) {
 		metrics.LoadSchemaCounter.WithLabelValues(metrics.SchemaValidatorCacheMiss).Inc()
 		logutil.BgLogger().Info("the schema version is much older than the latest version", zap.Int64("currVer", currVer),
 			zap.Int64("latestSchemaVer", s.latestSchemaVer), zap.Reflect("deltas", newerDeltas))
-		return nil, nil, true
+		return nil, true
 	}
 
 	changedTblMap := make(map[int64]uint64)
+	dbIDs := make([]int64, 0, 4)
 	for _, item := range newerDeltas {
 		for i, tblID := range item.relatedIDs {
 			for _, relatedTblID := range tableIDs {
 				if tblID == relatedTblID {
 					if !getAllInfo {
-						return nil, nil, true
+						return nil, true
 					}
 					if _, ok := changedTblMap[tblID]; !ok {
 						changedTblMap[tblID] = 0
 					}
 					changedTblMap[tblID] |= item.relatedActions[i]
+					dbIDs = append(dbIDs, item.relatedSchemaIDS...)
 				}
 			}
 		}
@@ -188,9 +197,14 @@ func (s *schemaValidator) isRelatedTablesChanged(currVer int64, tableIDs []int64
 		for _, tblID := range tblIds {
 			actionTypes = append(actionTypes, changedTblMap[tblID])
 		}
-		return tblIds, actionTypes, true
+		res := &relatedSchemaChange{
+			dbIDs:       dbIDs,
+			tblIDS:      tblIds,
+			actionTypes: actionTypes,
+		}
+		return res, true
 	}
-	return nil, nil, false
+	return nil, false
 }
 
 func (s *schemaValidator) findNewerDeltas(currVer int64) []deltaSchemaInfo {
@@ -204,15 +218,15 @@ func (s *schemaValidator) findNewerDeltas(currVer int64) []deltaSchemaInfo {
 
 // Check checks schema validity, returns true if use schemaVer and related tables at txnTS is legal.
 func (s *schemaValidator) Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64,
-	getAllInfo bool) ([]int64, []uint64, checkResult) {
+	getAllInfo bool) ([]int64, []int64, []uint64, checkResult) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 	if !s.isStarted {
 		logutil.BgLogger().Info("the schema validator stopped before checking")
-		return nil, nil, ResultUnknown
+		return nil, nil, nil, ResultUnknown
 	}
 	if s.lease == 0 {
-		return nil, nil, ResultSucc
+		return nil, nil, nil, ResultSucc
 	}
 
 	// Schema changed, result decided by whether related tables change.
@@ -221,32 +235,35 @@ func (s *schemaValidator) Check(txnTS uint64, schemaVer int64, relatedPhysicalTa
 		if len(relatedPhysicalTableIDs) == 0 {
 			logutil.BgLogger().Info("the related physical table ID is empty", zap.Int64("schemaVer", schemaVer),
 				zap.Int64("latestSchemaVer", s.latestSchemaVer))
-			return nil, nil, ResultFail
+			return nil, nil, nil, ResultFail
 		}
 
-		tblIds, actionTypes, changed := s.isRelatedTablesChanged(schemaVer, relatedPhysicalTableIDs, getAllInfo)
+		relatedChanges, changed := s.isRelatedTablesChanged(schemaVer, relatedPhysicalTableIDs, getAllInfo)
 		if changed {
-			return tblIds, actionTypes, ResultFail
+			if relatedChanges != nil {
+				return relatedChanges.dbIDs, relatedChanges.tblIDS, relatedChanges.actionTypes, ResultFail
+			}
+			return nil, nil, nil, ResultFail
 		}
-		return nil, nil, ResultSucc
+		return nil, nil, nil, ResultSucc
 	}
 
 	// Schema unchanged, maybe success or the schema validator is unavailable.
 	t := oracle.GetTimeFromTS(txnTS)
 	if t.After(s.latestSchemaExpire) {
-		return nil, nil, ResultUnknown
+		return nil, nil, nil, ResultUnknown
 	}
-	return nil, nil, ResultSucc
+	return nil, nil, nil, ResultSucc
 }
 
-func (s *schemaValidator) enqueue(schemaVersion int64, relatedPhysicalTableIDs []int64, actionTypes []uint64) {
+func (s *schemaValidator) enqueue(schemaVersion int64, change *relatedSchemaChange) {
 	maxCnt := int(variable.GetMaxDeltaSchemaCount())
 	if maxCnt <= 0 {
 		logutil.BgLogger().Info("the schema validator enqueue", zap.Int("delta max count", maxCnt))
 		return
 	}
 
-	delta := deltaSchemaInfo{schemaVersion, relatedPhysicalTableIDs, actionTypes}
+	delta := deltaSchemaInfo{schemaVersion, change.dbIDs, change.tblIDS, change.actionTypes}
 	if len(s.deltaSchemaInfos) == 0 {
 		s.deltaSchemaInfos = append(s.deltaSchemaInfos, delta)
 		return

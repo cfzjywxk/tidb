@@ -1393,9 +1393,11 @@ func (s *testPessimisticSuite) TestPointGetWithDeleteInMem(c *C) {
 func (s *testPessimisticSuite) TestPessimisticTxnWithDDL(c *C) {
 	tk := testkit.NewTestKitWithInit(c, s.store)
 	tk2 := testkit.NewTestKitWithInit(c, s.store)
-	tk.MustExec("drop table if exists uk")
+	tk.MustExec("drop table if exists t1")
 	tk.MustExec("create table t1 (c1 int primary key, c2 int)")
 	tk.MustExec("insert t1 values (1, 77), (2, 88)")
+	tk.MustExec("alter table t1 add index k2(c2)")
+	tk.MustExec("alter table t1 drop index k2")
 
 	// tk2 starts a pessimistic transaction and make some changes on table t1
 	// tk executes some ddl statements add/drop column on table t1
@@ -1416,7 +1418,20 @@ func (s *testPessimisticSuite) TestPessimisticTxnWithDDL(c *C) {
 	// other ddls should not succeed
 	tk.MustExec("begin pessimistic")
 	tk.MustExec("insert into t1 values(6)")
-	tk2.MustExec("alter table t1 add index k2(c1)")
+	tk2.MustExec("alter table t1 change column c1 c1 bigint")
 	err := tk.ExecToErr("commit")
 	c.Assert(err, NotNil)
+
+	// Add index basic test
+	tk.MustExec("drop table if exists t1")
+	tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
+	tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+
+	tk.MustExec("begin pessimistic")
+	tk.MustExec("insert into t1 values(3, 30, 300)")
+	tk2.MustExec("alter table t1 add index k2(c2)")
+	tk.MustExec("commit")
+	tk.MustExec("admin check table t1")
+	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 20").Check(testkit.Rows("200 20"))
+	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 10").Check(testkit.Rows("100 10"))
 }
