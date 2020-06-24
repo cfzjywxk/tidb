@@ -15,6 +15,7 @@ package infoschema
 
 import (
 	"fmt"
+	"github.com/ngaut/log"
 	"sort"
 	"strings"
 
@@ -36,21 +37,31 @@ type Builder struct {
 	handle *Handle
 }
 
+func (b *Builder) generateDbIDs(dbID int64, tblIDs []int64) []int64 {
+	dbIDs := make([]int64, len(tblIDs))
+	for i := 0; i < len(tblIDs); i++ {
+		dbIDs[i] = dbID
+	}
+	return dbIDs
+}
+
 // ApplyDiff applies SchemaDiff to the new InfoSchema.
 // Return the detail updated table IDs that are produced from SchemaDiff and an error.
-func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, error) {
+func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, []int64, error) {
+	log.Infof("[for debug] diff=%v", *diff)
 	b.is.schemaMetaVersion = diff.Version
 	if diff.Type == model.ActionCreateSchema {
-		return nil, b.applyCreateSchema(m, diff)
+		return nil, nil, b.applyCreateSchema(m, diff)
 	} else if diff.Type == model.ActionDropSchema {
 		tblIDs := b.applyDropSchema(diff.SchemaID)
-		return tblIDs, nil
+		dbIDs := b.generateDbIDs(diff.SchemaID, tblIDs)
+		return dbIDs, tblIDs, nil
 	} else if diff.Type == model.ActionModifySchemaCharsetAndCollate {
-		return nil, b.applyModifySchemaCharsetAndCollate(m, diff)
+		return nil, nil, b.applyModifySchemaCharsetAndCollate(m, diff)
 	}
 	roDBInfo, ok := b.is.SchemaByID(diff.SchemaID)
 	if !ok {
-		return nil, ErrDatabaseNotExists.GenWithStackByArgs(
+		return nil, nil, ErrDatabaseNotExists.GenWithStackByArgs(
 			fmt.Sprintf("(Schema ID %d)", diff.SchemaID),
 		)
 	}
@@ -71,6 +82,7 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 	b.copySortedTables(oldTableID, newTableID)
 
 	tblIDs := make([]int64, 0, 2)
+	var dbIDs []int64
 	// We try to reuse the old allocator, so the cached auto ID can be reused.
 	var allocs autoid.Allocators
 	if tableIDIsValid(oldTableID) {
@@ -81,31 +93,45 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 		}
 
 		tmpIDs := tblIDs
+		var tmpDbIDs []int64
 		if diff.Type == model.ActionRenameTable && diff.OldSchemaID != diff.SchemaID {
 			oldRoDBInfo, ok := b.is.SchemaByID(diff.OldSchemaID)
 			if !ok {
-				return nil, ErrDatabaseNotExists.GenWithStackByArgs(
+				return nil, nil, ErrDatabaseNotExists.GenWithStackByArgs(
 					fmt.Sprintf("(Schema ID %d)", diff.OldSchemaID),
 				)
 			}
 			oldDBInfo := b.copySchemaTables(oldRoDBInfo.Name.L)
 			tmpIDs = b.applyDropTable(oldDBInfo, oldTableID, tmpIDs)
+			tmpDbIDs = b.generateDbIDs(oldDBInfo.ID, tmpIDs)
 		} else {
+			// TODO ActionExchangeTablePartition with table in another database will return
+			// incorrect database id for this table, seems diff.OldSchemaID is needed for this change
 			tmpIDs = b.applyDropTable(dbInfo, oldTableID, tmpIDs)
+			tmpDbIDs = b.generateDbIDs(dbInfo.ID, tmpIDs)
 		}
 
+		log.Warnf("[for debug] before compare old new db=%v ids=%v tmpDb=%v tmpIDs=%v", dbIDs, tblIDs, tmpDbIDs, tmpIDs)
 		if oldTableID != newTableID {
 			// Update tblIDs only when oldTableID != newTableID because applyCreateTable() also updates tblIDs.
 			tblIDs = tmpIDs
+			dbIDs = tmpDbIDs
 		}
 	}
+	log.Warnf("[for debug] before processing newTable db=%v ids=%v", dbIDs, tblIDs)
 	if tableIDIsValid(newTableID) {
 		// All types except DropTableOrView.
 		var err error
-		tblIDs, err = b.applyCreateTable(m, dbInfo, newTableID, allocs, diff.Type, tblIDs)
+		var createTblIDs []int64
+		var createDbIDs []int64
+		createTblIDs, err = b.applyCreateTable(m, dbInfo, newTableID, allocs, diff.Type, createTblIDs)
 		if err != nil {
-			return nil, errors.Trace(err)
+			return nil, nil, errors.Trace(err)
 		}
+		createDbIDs = b.generateDbIDs(dbInfo.ID, createTblIDs)
+		dbIDs = append(dbIDs, createDbIDs...)
+		tblIDs = append(tblIDs, createTblIDs...)
+		log.Warnf("[for debug] after processing newTable db=%v ids=%v", dbIDs, tblIDs)
 	}
 	if diff.AffectedOpts != nil {
 		for _, opt := range diff.AffectedOpts {
@@ -118,14 +144,17 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 				OldSchemaID: opt.OldSchemaID,
 				OldTableID:  opt.OldTableID,
 			}
-			affectedIDs, err := b.ApplyDiff(m, affectedDiff)
+			affectedDbIDs, affectedTblIDs, err := b.ApplyDiff(m, affectedDiff)
 			if err != nil {
-				return nil, errors.Trace(err)
+				return nil, nil, errors.Trace(err)
 			}
-			tblIDs = append(tblIDs, affectedIDs...)
+			dbIDs = append(dbIDs, affectedDbIDs...)
+			tblIDs = append(tblIDs, affectedTblIDs...)
+			log.Warnf("[for debug] after processing AffectedOpts ids=%v", tblIDs)
 		}
 	}
-	return tblIDs, nil
+	log.Warnf("[for debug] returned tblIDs db=%v ids=%v", dbIDs, tblIDs)
+	return dbIDs, tblIDs, nil
 }
 
 func filterAllocators(diff *model.SchemaDiff, oldAllocs autoid.Allocators) autoid.Allocators {

@@ -81,19 +81,19 @@ type Domain struct {
 // loadInfoSchema loads infoschema at startTS into handle, usedSchemaVersion is the currently used
 // infoschema version, if it is the same as the schema version at startTS, we don't need to reload again.
 // It returns the latest schema version, the changed table IDs, whether it's a full load and an error.
-func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion int64, startTS uint64) (int64, []int64, bool, error) {
-	var fullLoad bool
+func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion int64,
+	startTS uint64) (neededSchemaVersion int64, change relatedSchemaChange, fullLoad bool, err error) {
 	snapshot, err := do.store.GetSnapshot(kv.NewVersion(startTS))
 	if err != nil {
-		return 0, nil, fullLoad, err
+		return 0, change, fullLoad, err
 	}
 	m := meta.NewSnapshotMeta(snapshot)
-	neededSchemaVersion, err := m.GetSchemaVersion()
+	neededSchemaVersion, err = m.GetSchemaVersion()
 	if err != nil {
-		return 0, nil, fullLoad, err
+		return 0, change, fullLoad, err
 	}
 	if usedSchemaVersion != 0 && usedSchemaVersion == neededSchemaVersion {
-		return neededSchemaVersion, nil, fullLoad, nil
+		return neededSchemaVersion, change, fullLoad, nil
 	}
 
 	// Update self schema version to etcd.
@@ -117,7 +117,7 @@ func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion in
 	}()
 
 	startTime := time.Now()
-	ok, tblIDs, err := do.tryLoadSchemaDiffs(m, usedSchemaVersion, neededSchemaVersion)
+	ok, relatedChanges, err := do.tryLoadSchemaDiffs(m, usedSchemaVersion, neededSchemaVersion)
 	if err != nil {
 		// We can fall back to full load, don't need to return the error.
 		logutil.BgLogger().Error("failed to load schema diff", zap.Error(err))
@@ -127,26 +127,28 @@ func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion in
 			zap.Int64("usedSchemaVersion", usedSchemaVersion),
 			zap.Int64("neededSchemaVersion", neededSchemaVersion),
 			zap.Duration("start time", time.Since(startTime)),
-			zap.Int64s("tblIDs", tblIDs))
-		return neededSchemaVersion, tblIDs, fullLoad, nil
+			zap.Int64s("dbIDs", relatedChanges.dbIDs),
+			zap.Int64s("phyTblIDs", relatedChanges.phyTblIDS),
+			zap.Uint64s("actionTypes", relatedChanges.actionTypes))
+		return neededSchemaVersion, relatedChanges, fullLoad, nil
 	}
 
 	fullLoad = true
 	schemas, err := do.fetchAllSchemasWithTables(m)
 	if err != nil {
-		return 0, nil, fullLoad, err
+		return 0, change, fullLoad, err
 	}
 
 	newISBuilder, err := infoschema.NewBuilder(handle).InitWithDBInfos(schemas, neededSchemaVersion)
 	if err != nil {
-		return 0, nil, fullLoad, err
+		return 0, change, fullLoad, err
 	}
 	logutil.BgLogger().Info("full load InfoSchema success",
 		zap.Int64("usedSchemaVersion", usedSchemaVersion),
 		zap.Int64("neededSchemaVersion", neededSchemaVersion),
 		zap.Duration("start time", time.Since(startTime)))
 	newISBuilder.Build()
-	return neededSchemaVersion, nil, fullLoad, nil
+	return neededSchemaVersion, change, fullLoad, nil
 }
 
 func (do *Domain) fetchAllSchemasWithTables(m *meta.Meta) ([]*model.DBInfo, error) {
@@ -230,43 +232,59 @@ func isTooOldSchema(usedVersion, newVersion int64) bool {
 	return false
 }
 
+type relatedSchemaChange struct {
+	dbIDs       []int64
+	phyTblIDS   []int64
+	actionTypes []uint64
+}
+
 // tryLoadSchemaDiffs tries to only load latest schema changes.
 // Return true if the schema is loaded successfully.
 // Return false if the schema can not be loaded by schema diff, then we need to do full load.
 // The second returned value is the delta updated table and partition IDs.
-func (do *Domain) tryLoadSchemaDiffs(m *meta.Meta, usedVersion, newVersion int64) (bool, []int64, error) {
+func (do *Domain) tryLoadSchemaDiffs(m *meta.Meta, usedVersion, newVersion int64) (bool, relatedSchemaChange, error) {
+	relatedChange := relatedSchemaChange{}
 	// If there isn't any used version, or used version is too old, we do full load.
 	// And when users use history read feature, we will set usedVersion to initialVersion, then full load is needed.
 	if isTooOldSchema(usedVersion, newVersion) {
-		return false, nil, nil
+		return false, relatedChange, nil
 	}
 	var diffs []*model.SchemaDiff
 	for usedVersion < newVersion {
 		usedVersion++
 		diff, err := m.GetSchemaDiff(usedVersion)
 		if err != nil {
-			return false, nil, err
+			return false, relatedChange, err
 		}
 		if diff == nil {
 			// If diff is missing for any version between used and new version, we fall back to full reload.
-			return false, nil, nil
+			return false, relatedChange, nil
 		}
 		diffs = append(diffs, diff)
 	}
 	builder := infoschema.NewBuilder(do.infoHandle).InitWithOldInfoSchema()
-	tblIDs := make([]int64, 0, len(diffs))
+	dbIDs := make([]int64, 0, len(diffs))
+	phyTblIDs := make([]int64, 0, len(diffs))
+	actions := make([]uint64, 0, len(diffs))
 	for _, diff := range diffs {
-		ids, err := builder.ApplyDiff(m, diff)
+		schemaIDs, IDs, err := builder.ApplyDiff(m, diff)
 		if err != nil {
-			return false, nil, err
+			return false, relatedChange, err
 		}
 		if canSkipSchemaCheckerDDL(diff.Type) {
 			continue
 		}
-		tblIDs = append(tblIDs, ids...)
+		dbIDs = append(dbIDs, schemaIDs...)
+		phyTblIDs = append(phyTblIDs, IDs...)
+		for i := 0; i < len(phyTblIDs); i++ {
+			actions = append(actions, uint64(1<<diff.Type))
+		}
 	}
 	builder.Build()
-	return true, tblIDs, nil
+	relatedChange.dbIDs = dbIDs
+	relatedChange.phyTblIDS = phyTblIDs
+	relatedChange.actionTypes = actions
+	return true, relatedChange, nil
 }
 
 func canSkipSchemaCheckerDDL(tp model.ActionType) bool {
@@ -353,10 +371,10 @@ func (do *Domain) Reload() error {
 	}
 
 	var (
-		fullLoad                bool
-		changedPhysicalTableIDs []int64
+		fullLoad       bool
+		relatedChanges relatedSchemaChange
 	)
-	neededSchemaVersion, changedPhysicalTableIDs, fullLoad, err = do.loadInfoSchema(do.infoHandle, schemaVersion, ver.Ver)
+	neededSchemaVersion, relatedChanges, fullLoad, err = do.loadInfoSchema(do.infoHandle, schemaVersion, ver.Ver)
 	metrics.LoadSchemaDuration.Observe(time.Since(startTime).Seconds())
 	if err != nil {
 		metrics.LoadSchemaCounter.WithLabelValues("failed").Inc()
@@ -368,7 +386,7 @@ func (do *Domain) Reload() error {
 		logutil.BgLogger().Info("full load and reset schema validator")
 		do.SchemaValidator.Reset()
 	}
-	do.SchemaValidator.Update(ver.Ver, schemaVersion, neededSchemaVersion, changedPhysicalTableIDs)
+	do.SchemaValidator.Update(ver.Ver, schemaVersion, neededSchemaVersion, relatedChanges)
 
 	lease := do.DDL().GetLease()
 	sub := time.Since(startTime)
