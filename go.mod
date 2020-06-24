@@ -21,6 +21,7 @@ require (
 	github.com/iancoleman/strcase v0.0.0-20191112232945-16388991a334
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/klauspost/cpuid v1.2.1
+	github.com/ngaut/log v0.0.0-20180314031856-b8e36e7ba5ac
 	github.com/ngaut/pools v0.0.0-20180318154953-b7bc8c42aac7
 	github.com/ngaut/sync2 v0.0.0-20141008032647-7a24ed77b2ef
 	github.com/ngaut/unistore v0.0.0-20200630072006-0c4035925f69

@@ -665,18 +665,18 @@ func (c *RegionCache) GroupKeysByRegion(bo *Backoffer, keys [][]byte, filter fun
 
 type groupedMutations struct {
 	region    RegionVerID
-	mutations committerMutations
+	mutations CommitterMutations
 }
 
 // GroupSortedMutationsByRegion separates keys into groups by their belonging Regions.
-func (c *RegionCache) GroupSortedMutationsByRegion(bo *Backoffer, m committerMutations) ([]groupedMutations, error) {
+func (c *RegionCache) GroupSortedMutationsByRegion(bo *Backoffer, m CommitterMutations) ([]groupedMutations, error) {
 	var (
 		groups  []groupedMutations
 		lastLoc *KeyLocation
 	)
 	lastUpperBound := 0
-	for i := range m.keys {
-		if lastLoc == nil || !lastLoc.Contains(m.keys[i]) {
+	for i := range m.Keys {
+		if lastLoc == nil || !lastLoc.Contains(m.Keys[i]) {
 			if lastLoc != nil {
 				groups = append(groups, groupedMutations{
 					region:    lastLoc.Region,
@@ -685,7 +685,7 @@ func (c *RegionCache) GroupSortedMutationsByRegion(bo *Backoffer, m committerMut
 				lastUpperBound = i
 			}
 			var err error
-			lastLoc, err = c.LocateKey(bo, m.keys[i])
+			lastLoc, err = c.LocateKey(bo, m.Keys[i])
 			if err != nil {
 				return nil, errors.Trace(err)
 			}

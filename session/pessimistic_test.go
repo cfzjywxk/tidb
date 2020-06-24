@@ -1389,3 +1389,118 @@ func (s *testPessimisticSuite) TestPointGetWithDeleteInMem(c *C) {
 	tk2.MustQuery("select * from uk where c1 = 10").Check(testkit.Rows("10 77"))
 	tk.MustExec("drop table if exists uk")
 }
+
+func (s *testPessimisticSuite) TestPessimisticTxnWithDDLAddDropColumn(c *C) {
+	tk := testkit.NewTestKitWithInit(c, s.store)
+	tk2 := testkit.NewTestKitWithInit(c, s.store)
+	tk.MustExec("drop table if exists t1")
+	tk.MustExec("create table t1 (c1 int primary key, c2 int)")
+	tk.MustExec("insert t1 values (1, 77), (2, 88)")
+	tk.MustExec("alter table t1 add index k2(c2)")
+	tk.MustExec("alter table t1 drop index k2")
+
+	// tk2 starts a pessimistic transaction and make some changes on table t1
+	// tk executes some ddl statements add/drop column on table t1
+	tk.MustExec("begin pessimistic")
+	tk.MustExec("update t1 set c2 = c1 * 10")
+	tk2.MustExec("alter table t1 add column c3 int after c1")
+	tk.MustExec("commit")
+	tk.MustExec("admin check table t1")
+	tk.MustQuery("select * from t1").Check(testkit.Rows("1 <nil> 10", "2 <nil> 20"))
+
+	tk.MustExec("begin pessimistic")
+	tk.MustExec("insert into t1 values(5, 5, 5)")
+	tk2.MustExec("alter table t1 drop column c3")
+	tk2.MustExec("alter table t1 drop column c2")
+	tk.MustExec("commit")
+	tk.MustQuery("select * from t1").Check(testkit.Rows("1", "2", "5"))
+}
+
+func (s *testPessimisticSuite) TestPessimisticTxnWithDDLAddIndex(c *C) {
+	tk := testkit.NewTestKitWithInit(c, s.store)
+	tk2 := testkit.NewTestKitWithInit(c, s.store)
+	tk.MustExec("drop table if exists t1")
+	tk.MustExec("create table t1 (c1 int primary key, c2 int)")
+	tk.MustExec("insert t1 values (1, 77), (2, 88)")
+	tk.MustExec("alter table t1 add index k2(c2)")
+	tk.MustExec("alter table t1 drop index k2")
+
+	type caseUnit struct {
+		tkSqls     []string
+		tk2DDL     string
+		checkSqls  []string
+		rowsExps   []string
+		failCommit bool
+	}
+
+	// The initial t1 table is always in this state
+	// tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
+	// tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+	cases := []caseUnit{
+		// Test secondary index
+		{[]string{"insert into t1 values(3, 30, 300)"},
+			"alter table t1 add index k2(c2)",
+			[]string{"select c3, c2 from t1 use index(k2) where c2 = 20",
+				"select c3, c2 from t1 use index(k2) where c2 = 10"},
+			[]string{"200 20", "100 10"},
+			false},
+		// Test unique index
+		{[]string{"insert into t1 values(3, 30, 300)",
+			"insert into t1 values(4, 40, 400)"},
+			"alter table t1 add unique index uk3(c3)",
+			[]string{"select c3, c2 from t1 use index(uk3) where c3 = 200",
+				"select c3, c2 from t1 use index(uk3) where c3 = 300",
+				"select c3, c2 from t1 use index(uk3) where c3 = 400"},
+			[]string{"200 20", "300 30", "400 40"},
+			false},
+		// Test unique index fail to commit
+		{[]string{"insert into t1 values(3, 30, 300)",
+			"insert into t1 values(4, 40, 300)"},
+			"alter table t1 add unique index uk3(c3)",
+			[]string{"select c3, c2 from t1 use index(uk3) where c3 = 200",
+				"select c3, c2 from t1 use index(uk3) where c3 = 300",
+				"select c3, c2 from t1 where c1 = 4"},
+			[]string{"200 20", "", ""},
+			true},
+	}
+
+	for _, curCase := range cases {
+		tk.MustExec("drop table if exists t1")
+		tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
+		tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+
+		tk.MustExec("begin pessimistic")
+		for _, tkSql := range curCase.tkSqls {
+			tk.MustExec(tkSql)
+		}
+		tk2.MustExec(curCase.tk2DDL)
+		if curCase.failCommit {
+			err := tk.ExecToErr("commit")
+			c.Assert(err, NotNil)
+		} else {
+			tk.MustExec("commit")
+		}
+		tk.MustExec("admin check table t1")
+		for i, checkSql := range curCase.checkSqls {
+			if len(curCase.rowsExps[i]) > 0 {
+				tk2.MustQuery(checkSql).Check(testkit.Rows(curCase.rowsExps[i]))
+			} else {
+				tk2.MustQuery(checkSql).Check(nil)
+			}
+		}
+	}
+	/*
+		// Add index test on virtual generated column
+			tk.MustExec("drop table if exists t1")
+			tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int generated always as (c1 + c2))")
+			tk.MustExec("insert into t1(c1, c2) values (1, 2), (3, 4)")
+
+			tk.MustExec("begin pessimistic")
+			tk.MustExec("insert into t1(c1, c2) values(5, 6)")
+			tk2.MustExec("alter table t1 add index k3(c3)")
+			tk.MustExec("commit")
+			tk.MustExec("admin check table t1")
+			tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 4").Check(testkit.Rows("7 4"))
+			tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 6").Check(testkit.Rows("11 6"))
+	*/
+}
