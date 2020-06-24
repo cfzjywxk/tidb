@@ -1393,13 +1393,13 @@ func (c *twoPhaseCommitter) stripNoNeedCommitKeys() {
 }
 
 type schemaLeaseChecker interface {
-	Check(txnTS uint64) error
+	Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []int64, []uint64, bool, error)
 }
 
 func (c *twoPhaseCommitter) checkSchemaValid() error {
 	checker, ok := c.txn.us.GetOption(kv.SchemaChecker).(schemaLeaseChecker)
 	if ok {
-		err := checker.Check(c.commitTS)
+		_, _, _, _, err := checker.Check(c.commitTS, false)
 		if err != nil {
 			return errors.Trace(err)
 		}

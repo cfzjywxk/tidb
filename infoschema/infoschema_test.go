@@ -201,7 +201,7 @@ func (*testSuite) TestT(c *C) {
 	c.Assert(err, IsNil)
 	txn, err = store.Begin()
 	c.Assert(err, IsNil)
-	_, err = builder.ApplyDiff(meta.NewMeta(txn), &model.SchemaDiff{Type: model.ActionRenameTable, SchemaID: dbID, TableID: tbID, OldSchemaID: dbID})
+	_, _, err = builder.ApplyDiff(meta.NewMeta(txn), &model.SchemaDiff{Type: model.ActionRenameTable, SchemaID: dbID, TableID: tbID, OldSchemaID: dbID})
 	c.Assert(err, IsNil)
 	txn.Rollback()
 	builder.Build()
@@ -239,13 +239,13 @@ func (testSuite) TestMockInfoSchema(c *C) {
 
 func checkApplyCreateNonExistsSchemaDoesNotPanic(c *C, txn kv.Transaction, builder *infoschema.Builder) {
 	m := meta.NewMeta(txn)
-	_, err := builder.ApplyDiff(m, &model.SchemaDiff{Type: model.ActionCreateSchema, SchemaID: 999})
+	_, _, err := builder.ApplyDiff(m, &model.SchemaDiff{Type: model.ActionCreateSchema, SchemaID: 999})
 	c.Assert(infoschema.ErrDatabaseNotExists.Equal(err), IsTrue)
 }
 
 func checkApplyCreateNonExistsTableDoesNotPanic(c *C, txn kv.Transaction, builder *infoschema.Builder, dbID int64) {
 	m := meta.NewMeta(txn)
-	_, err := builder.ApplyDiff(m, &model.SchemaDiff{Type: model.ActionCreateTable, SchemaID: dbID, TableID: 999})
+	_, _, err := builder.ApplyDiff(m, &model.SchemaDiff{Type: model.ActionCreateTable, SchemaID: dbID, TableID: 999})
 	c.Assert(infoschema.ErrTableNotExists.Equal(err), IsTrue)
 }
 

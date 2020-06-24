@@ -14,6 +14,7 @@
 package domain
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -41,9 +42,10 @@ type SchemaValidator interface {
 	// The latest schemaVer is valid within leaseGrantTime plus lease duration.
 	// Add the changed table IDs to the new schema information,
 	// which is produced when the oldSchemaVer is updated to the newSchemaVer.
-	Update(leaseGrantTime uint64, oldSchemaVer, newSchemaVer int64, changedTableIDs []int64)
+	Update(leaseGrantTime uint64, oldSchemaVer, newSchemaVer int64, change relatedSchemaChange)
 	// Check is it valid for a transaction to use schemaVer and related tables, at timestamp txnTS.
-	Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64) checkResult
+	// If getAllInfo is set to true, try to return all changed database id, table id and action type array
+	Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64, getAllInfo bool) (*relatedSchemaChange, checkResult)
 	// Stop stops checking the valid of transaction.
 	Stop()
 	// Restart restarts the schema validator after it is stopped.
@@ -55,8 +57,10 @@ type SchemaValidator interface {
 }
 
 type deltaSchemaInfo struct {
-	schemaVersion int64
-	relatedIDs    []int64
+	schemaVersion    int64
+	relatedSchemaIDS []int64
+	relatedIDs       []int64
+	relatedActions   []uint64
 }
 
 type schemaValidator struct {
@@ -119,7 +123,7 @@ func (s *schemaValidator) Reset() {
 	s.deltaSchemaInfos = s.deltaSchemaInfos[:0]
 }
 
-func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, changedTableIDs []int64) {
+func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, change relatedSchemaChange) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 
@@ -136,45 +140,65 @@ func (s *schemaValidator) Update(leaseGrantTS uint64, oldVer, currVer int64, cha
 
 	// Update the schema deltaItem information.
 	if currVer != oldVer {
+		s.enqueue(currVer, change)
 		logutil.BgLogger().Debug("update schema validator", zap.Int64("oldVer", oldVer),
-			zap.Int64("currVer", currVer), zap.Int64s("changedTableIDs", changedTableIDs))
-		s.enqueue(currVer, changedTableIDs)
+			zap.Int64("currVer", currVer), zap.Int64s("dbIDs", change.dbIDs),
+			zap.Int64s("changedTableIDs", change.phyTblIDS), zap.Uint64s("changedActionTypes", change.actionTypes))
 	}
-}
-
-func hasRelatedTableID(relatedTableIDs, updateTableIDs []int64) bool {
-	for _, tblID := range updateTableIDs {
-		for _, relatedTblID := range relatedTableIDs {
-			if tblID == relatedTblID {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // isRelatedTablesChanged returns the result whether relatedTableIDs is changed
 // from usedVer to the latest schema version.
 // NOTE, this function should be called under lock!
-func (s *schemaValidator) isRelatedTablesChanged(currVer int64, tableIDs []int64) bool {
+func (s *schemaValidator) isRelatedTablesChanged(currVer int64, tableIDs []int64, getAllInfo bool) (relatedSchemaChange, bool) {
+	res := relatedSchemaChange{}
 	if len(s.deltaSchemaInfos) == 0 {
 		metrics.LoadSchemaCounter.WithLabelValues(metrics.SchemaValidatorCacheEmpty).Inc()
 		logutil.BgLogger().Info("schema change history is empty", zap.Int64("currVer", currVer))
-		return true
+		return res, true
 	}
 	newerDeltas := s.findNewerDeltas(currVer)
 	if len(newerDeltas) == len(s.deltaSchemaInfos) {
 		metrics.LoadSchemaCounter.WithLabelValues(metrics.SchemaValidatorCacheMiss).Inc()
 		logutil.BgLogger().Info("the schema version is much older than the latest version", zap.Int64("currVer", currVer),
 			zap.Int64("latestSchemaVer", s.latestSchemaVer), zap.Reflect("deltas", newerDeltas))
-		return true
+		return res, true
 	}
+
+	changedTblMap := make(map[int64]uint64)
+	changedTblSchemaID := make(map[int64]int64)
 	for _, item := range newerDeltas {
-		if hasRelatedTableID(item.relatedIDs, tableIDs) {
-			return true
+		for i, tblID := range item.relatedIDs {
+			for _, relatedTblID := range tableIDs {
+				if tblID == relatedTblID {
+					if !getAllInfo {
+						return res, true
+					}
+					changedTblMap[tblID] |= item.relatedActions[i]
+					// TODO for action types like actionExchangeTablePartition, dbIDs may not be accurate
+					changedTblSchemaID[tblID] = item.relatedSchemaIDS[i]
+				}
+			}
 		}
 	}
-	return false
+	if len(changedTblMap) > 0 && getAllInfo {
+		dbIDs := make([]int64, 0, len(changedTblMap))
+		tblIds := make([]int64, 0, len(changedTblMap))
+		actionTypes := make([]uint64, 0, len(changedTblMap))
+		for id := range changedTblMap {
+			tblIds = append(tblIds, id)
+		}
+		sort.Slice(tblIds, func(i, j int) bool { return tblIds[i] < tblIds[j] })
+		for _, tblID := range tblIds {
+			actionTypes = append(actionTypes, changedTblMap[tblID])
+			dbIDs = append(dbIDs, changedTblSchemaID[tblID])
+		}
+		res.dbIDs = dbIDs
+		res.phyTblIDS = tblIds
+		res.actionTypes = actionTypes
+		return res, true
+	}
+	return res, false
 }
 
 func (s *schemaValidator) findNewerDeltas(currVer int64) []deltaSchemaInfo {
@@ -187,15 +211,16 @@ func (s *schemaValidator) findNewerDeltas(currVer int64) []deltaSchemaInfo {
 }
 
 // Check checks schema validity, returns true if use schemaVer and related tables at txnTS is legal.
-func (s *schemaValidator) Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64) checkResult {
+func (s *schemaValidator) Check(txnTS uint64, schemaVer int64, relatedPhysicalTableIDs []int64,
+	getAllInfo bool) (*relatedSchemaChange, checkResult) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 	if !s.isStarted {
 		logutil.BgLogger().Info("the schema validator stopped before checking")
-		return ResultUnknown
+		return nil, ResultUnknown
 	}
 	if s.lease == 0 {
-		return ResultSucc
+		return nil, ResultSucc
 	}
 
 	// Schema changed, result decided by whether related tables change.
@@ -204,31 +229,35 @@ func (s *schemaValidator) Check(txnTS uint64, schemaVer int64, relatedPhysicalTa
 		if len(relatedPhysicalTableIDs) == 0 {
 			logutil.BgLogger().Info("the related physical table ID is empty", zap.Int64("schemaVer", schemaVer),
 				zap.Int64("latestSchemaVer", s.latestSchemaVer))
-			return ResultFail
+			return nil, ResultFail
 		}
 
-		if s.isRelatedTablesChanged(schemaVer, relatedPhysicalTableIDs) {
-			return ResultFail
+		relatedChanges, changed := s.isRelatedTablesChanged(schemaVer, relatedPhysicalTableIDs, getAllInfo)
+		if changed {
+			if len(relatedChanges.phyTblIDS) > 0 {
+				return &relatedChanges, ResultFail
+			}
+			return nil, ResultFail
 		}
-		return ResultSucc
+		return nil, ResultSucc
 	}
 
 	// Schema unchanged, maybe success or the schema validator is unavailable.
 	t := oracle.GetTimeFromTS(txnTS)
 	if t.After(s.latestSchemaExpire) {
-		return ResultUnknown
+		return nil, ResultUnknown
 	}
-	return ResultSucc
+	return nil, ResultSucc
 }
 
-func (s *schemaValidator) enqueue(schemaVersion int64, relatedPhysicalTableIDs []int64) {
+func (s *schemaValidator) enqueue(schemaVersion int64, change relatedSchemaChange) {
 	maxCnt := int(variable.GetMaxDeltaSchemaCount())
 	if maxCnt <= 0 {
 		logutil.BgLogger().Info("the schema validator enqueue", zap.Int("delta max count", maxCnt))
 		return
 	}
 
-	delta := deltaSchemaInfo{schemaVersion, relatedPhysicalTableIDs}
+	delta := deltaSchemaInfo{schemaVersion, change.dbIDs, change.phyTblIDS, change.actionTypes}
 	if len(s.deltaSchemaInfos) == 0 {
 		s.deltaSchemaInfos = append(s.deltaSchemaInfos, delta)
 		return
@@ -236,7 +265,7 @@ func (s *schemaValidator) enqueue(schemaVersion int64, relatedPhysicalTableIDs [
 
 	lastOffset := len(s.deltaSchemaInfos) - 1
 	// The first item we needn't to merge, because we hope to cover more versions.
-	if lastOffset != 0 && ids(s.deltaSchemaInfos[lastOffset].relatedIDs).containIn(delta.relatedIDs) {
+	if lastOffset != 0 && containIn(s.deltaSchemaInfos[lastOffset], delta) {
 		s.deltaSchemaInfos[lastOffset] = delta
 	} else {
 		s.deltaSchemaInfos = append(s.deltaSchemaInfos, delta)
@@ -249,19 +278,17 @@ func (s *schemaValidator) enqueue(schemaVersion int64, relatedPhysicalTableIDs [
 	}
 }
 
-type ids []int64
-
 // containIn is checks if a is included in b.
-func (a ids) containIn(b []int64) bool {
-	if len(a) > len(b) {
+func containIn(lastDelta, curDelta deltaSchemaInfo) bool {
+	if len(lastDelta.relatedIDs) > len(curDelta.relatedIDs) {
 		return false
 	}
 
 	var isEqual bool
-	for _, i := range a {
+	for i, lastTblID := range lastDelta.relatedIDs {
 		isEqual = false
-		for _, j := range b {
-			if i == j {
+		for j, curTblID := range curDelta.relatedIDs {
+			if lastTblID == curTblID && lastDelta.relatedActions[i] == curDelta.relatedActions[j] {
 				isEqual = true
 				break
 			}
