@@ -15,9 +15,6 @@ package session
 
 import (
 	"context"
-	"go.uber.org/zap"
-	"time"
-
 	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	pb "github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -25,11 +22,17 @@ import (
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/meta"
+	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/store/tikv"
 	"github.com/pingcap/tidb/table"
+	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
+	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/logutil"
+	"github.com/pingcap/tidb/util/rowcodec"
+	"go.uber.org/zap"
+	"time"
 )
 
 const amendableType = (1 << model.ActionAddColumn) | (1 << model.ActionDropColumn) | (memBufAmendType)
@@ -94,12 +97,16 @@ var constOpDropIndex = map[model.SchemaState]map[model.SchemaState]int{
 
 // amendOperations has all amend operations for each related table having schema changes
 type amendOperations struct {
-	tblMap map[int64][]amendOperation
+	tblAmendOpMap map[int64][]amendOperation
+	tblDecoder    map[int64]*rowcodec.ChunkDecoder
+	tblChk        map[int64]*chunk.Chunk
 }
 
 func newAmendOperations() *amendOperations {
 	res := &amendOperations{
-		tblMap: make(map[int64][]amendOperation),
+		tblAmendOpMap: make(map[int64][]amendOperation),
+		tblDecoder:    make(map[int64]*rowcodec.ChunkDecoder),
+		tblChk:        make(map[int64]*chunk.Chunk),
 	}
 	return res
 }
@@ -121,7 +128,7 @@ func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 				break
 			}
 		}
-		// Try to find index with "add index" state change
+		// Try to find index state change
 		if idxInfoAtStart == nil {
 			op.indexInfoAtStart = nil
 			op.AmendOpType = constOpAddIndex[model.StateNone][idxInfoAtCommit.State]
@@ -145,11 +152,6 @@ func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 					log.Warnf("column=%v not found in original schema", *idxCol)
 					return nil, table.ErrUnsupportedOp
 				}
-				// TODO add index on generated column is not supported by now
-				if oldColInfo.IsGenerated() {
-					logutil.Logger(ctx).Warn("generated column is not supported in amend")
-					return nil, table.ErrUnsupportedOp
-				}
 			}
 			res = append(res, op)
 		}
@@ -157,8 +159,9 @@ func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 	return res, nil
 }
 
-// genTableAmendOps generates amend operations for each table with related schema change
-func (a *amendOperations) genTableAmendOps(ctx context.Context, dbID, phyTblID int64, tblInfoAtStart, tblInfoAtCommit *model.TableInfo) error {
+// genTableAmendOps generates amend operations for each table
+func (a *amendOperations) genTableAmendOps(ctx context.Context, sctx sessionctx.Context, dbID, phyTblID int64,
+	tblInfoAtStart, tblInfoAtCommit *model.TableInfo) error {
 	// TODO generate needed amend ops
 	// Currently only add index is considered
 	ops, err := a.genAddIndexAmendOps(ctx, dbID, phyTblID, tblInfoAtStart, tblInfoAtCommit)
@@ -166,10 +169,16 @@ func (a *amendOperations) genTableAmendOps(ctx context.Context, dbID, phyTblID i
 		return errors.Trace(err)
 	}
 	log.Infof("[for debug]genTableAmendOps ops=%v", ops)
-	if _, ok := a.tblMap[phyTblID]; !ok {
-		a.tblMap[phyTblID] = make([]amendOperation, 0, 4)
+	if _, ok := a.tblAmendOpMap[phyTblID]; !ok {
+		a.tblAmendOpMap[phyTblID] = make([]amendOperation, 0, 4)
+		a.tblDecoder[phyTblID] = newRowChkDecoder(sctx, tblInfoAtStart)
+		fieldTypes := make([]*types.FieldType, 0, len(tblInfoAtStart.Columns))
+		for _, col := range tblInfoAtStart.Columns {
+			fieldTypes = append(fieldTypes, &col.FieldType)
+		}
+		a.tblChk[phyTblID] = chunk.NewChunkWithCapacity(fieldTypes, 4)
 	}
-	a.tblMap[phyTblID] = append(a.tblMap[phyTblID], ops...)
+	a.tblAmendOpMap[phyTblID] = append(a.tblAmendOpMap[phyTblID], ops...)
 	return nil
 }
 
@@ -192,14 +201,18 @@ func (a *amendOperations) genOneMut(sess *session, amendOp *amendOperation, kvMa
 	if err != nil {
 		panic("decode err")
 	}
-	// Debug test code
-	log.Warnf("[for debug] rowMap=%v", rowMap)
-	for k, v := range rowMap {
-		log.Warnf("[for debug] decoded k=%v, v=%v, idxPrefix=%v", k, v, idxPrefix)
+	rowDecoder := a.tblDecoder[amendOp.phyTblID]
+	chk := a.tblChk[amendOp.phyTblID]
+	val := kvMaps[string(key)]
+	err = rowDecoder.DecodeToChunk(val, kvHandle, chk)
+	if err != nil {
+		panic("decode err")
 	}
 	idxVals := make([]types.Datum, 0, len(amendOp.indexInfoAtCommit.Columns))
 	for _, oldCol := range amendOp.relatedOldIdxCols {
-		idxVals = append(idxVals, rowMap[oldCol.ID])
+		//idxVals = append(idxVals, rowMap[oldCol.ID])
+		log.Warnf("[for debug] rowMap_value=%v chk_value=%v", rowMap[oldCol.ID], chk.GetRow(0).GetDatum(oldCol.Offset, &oldCol.FieldType))
+		idxVals = append(idxVals, chk.GetRow(0).GetDatum(oldCol.Offset, &oldCol.FieldType))
 	}
 
 	// Generate index key buf
@@ -240,7 +253,7 @@ func (a *amendOperations) genMutations(ctx context.Context, sess *session, KeyOp
 	if err != nil {
 		panic("decode row key error")
 	}
-	if amendOpArr, ok := a.tblMap[phyTblID]; ok {
+	if amendOpArr, ok := a.tblAmendOpMap[phyTblID]; ok {
 		log.Warnf("[for debug] processing key=%x table ops=%v", key, amendOpArr)
 		for _, amendOp := range amendOpArr {
 			if amendOp.AmendOpType == AmendNone {
@@ -393,7 +406,7 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 		}
 		if change.ActionTypes[i]&(memBufAmendType) != 0 {
 			needAmendMem = true
-			err := amendOps.genTableAmendOps(ctx, change.DBIDs[i], tblID, tblInfoAtStart, tblInfoAtCommit)
+			err := amendOps.genTableAmendOps(ctx, s.sess, change.DBIDs[i], tblID, tblInfoAtStart, tblInfoAtCommit)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -403,4 +416,47 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 		return s.genMemAmendMutations(ctx, commitMutations, amendOps)
 	}
 	return nil, nil, nil
+}
+
+func newRowChkDecoder(ctx sessionctx.Context, tbl *model.TableInfo) *rowcodec.ChunkDecoder {
+	getColInfoByID := func(tbl *model.TableInfo, colID int64) *model.ColumnInfo {
+		for _, col := range tbl.Columns {
+			if col.ID == colID {
+				return col
+			}
+		}
+		return nil
+	}
+	var pkCols []int64
+	reqCols := make([]rowcodec.ColInfo, len(tbl.Columns))
+	for i := range tbl.Columns {
+		idx, col := i, tbl.Columns[i]
+		isPK := (tbl.PKIsHandle && mysql.HasPriKeyFlag(col.FieldType.Flag)) || col.ID == model.ExtraHandleID
+		if isPK {
+			pkCols = append(pkCols, col.ID)
+		}
+
+		isVirtualGenCol := col.IsGenerated() && !col.GeneratedStored
+		reqCols[idx] = rowcodec.ColInfo{
+			ID:            col.ID,
+			VirtualGenCol: isVirtualGenCol,
+			Ft:            &col.FieldType,
+		}
+	}
+	if len(pkCols) == 0 {
+		pkCols = tables.TryGetCommonPkColumnIds(tbl)
+		if len(pkCols) == 0 {
+			pkCols = []int64{0}
+		}
+	}
+	defVal := func(i int, chk *chunk.Chunk) error {
+		ci := getColInfoByID(tbl, reqCols[i].ID)
+		d, err := table.GetColOriginDefaultValue(ctx, ci)
+		if err != nil {
+			return err
+		}
+		chk.AppendDatum(i, &d)
+		return nil
+	}
+	return rowcodec.NewChunkDecoder(reqCols, pkCols, defVal, ctx.GetSessionVars().TimeZone)
 }

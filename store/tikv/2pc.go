@@ -1290,21 +1290,36 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 		return errors.Trace(err)
 	}
 
-	relatedSchemaChange, amended, err := c.checkSchemaValid(ctx, c.startTS, commitTS, c.txn.schemaVer, c.isPessimistic && c.connID > 0)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	if amended {
-		// Get new commitTS and check schema valid again
-		newCommitTS, err := c.getCommitTS(ctx, commitDetail)
+	tryAmend := c.isPessimistic && c.connID > 0
+	if !tryAmend {
+		_, _, err = c.checkSchemaValid(ctx, c.startTS, commitTS, c.txn.schemaVer, false)
 		if err != nil {
 			return errors.Trace(err)
 		}
-		_, _, err = c.checkSchemaValid(ctx, commitTS, newCommitTS, relatedSchemaChange.LatestSchemaVer, false)
+	} else {
+		startSchemaVer := c.txn.schemaVer
+		startTS := c.startTS
+		checkTs := commitTS
+		relatedSchemaChange, amended, err := c.checkSchemaValid(ctx, startTS, checkTs, startSchemaVer, true)
 		if err != nil {
 			return errors.Trace(err)
 		}
-		commitTS = newCommitTS
+		if amended {
+			startTS = checkTs
+			startSchemaVer = relatedSchemaChange.LatestSchemaVer
+			// Get new commitTS and check schema valid again
+			newCommitTS, err := c.getCommitTS(ctx, commitDetail)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			checkTs = newCommitTS
+			// If schema check failed between commitTS and newCommitTs, report schema change error
+			_, _, err = c.checkSchemaValid(ctx, startTS, checkTs, startSchemaVer, false)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			commitTS = newCommitTS
+		}
 	}
 	c.commitTS = commitTS
 
