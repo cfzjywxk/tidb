@@ -14,10 +14,11 @@
 package domain
 
 import (
+	"github.com/pingcap/tidb/metrics"
 	"sync/atomic"
 	"time"
 
-	"github.com/pingcap/tidb/metrics"
+	"github.com/pingcap/tidb/store/tikv"
 )
 
 // SchemaChecker is used for checking schema-validity.
@@ -44,26 +45,30 @@ func NewSchemaChecker(do *Domain, schemaVer int64, relatedTableIDs []int64) *Sch
 }
 
 // Check checks the validity of the schema version.
-func (s *SchemaChecker) Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []int64, []uint64, bool, error) {
+func (s *SchemaChecker) Check(txnTS uint64, getAllChangedInfo bool) (*tikv.RelatedSchemaChange, bool, error) {
+	return s.CheckBySchemaVer(txnTS, s.schemaVer, getAllChangedInfo)
+}
+
+func (s *SchemaChecker) CheckBySchemaVer(txnTS uint64, startSchemaVer int64, getAllChangedInfo bool) (*tikv.RelatedSchemaChange, bool, error) {
 	schemaOutOfDateRetryInterval := atomic.LoadInt64(&SchemaOutOfDateRetryInterval)
 	schemaOutOfDateRetryTimes := int(atomic.LoadInt32(&SchemaOutOfDateRetryTimes))
 	for i := 0; i < schemaOutOfDateRetryTimes; i++ {
-		relatedChange, CheckResult := s.SchemaValidator.Check(txnTS, s.schemaVer, s.relatedTableIDs, getAllChangedInfo)
+		relatedChange, CheckResult := s.SchemaValidator.Check(txnTS, startSchemaVer, s.relatedTableIDs, getAllChangedInfo)
 		switch CheckResult {
 		case ResultSucc:
-			return nil, nil, nil, false, nil
+			return nil, false, nil
 		case ResultFail:
 			metrics.SchemaLeaseErrorCounter.WithLabelValues("changed").Inc()
-			amendable := getAllChangedInfo && relatedChange != nil && (len(relatedChange.phyTblIDS) > 0)
+			amendable := getAllChangedInfo && relatedChange != nil && (len(relatedChange.PhyTblIDS) > 0)
 			if amendable {
-				return relatedChange.dbIDs, relatedChange.phyTblIDS, relatedChange.actionTypes, amendable, ErrInfoSchemaChanged
+				return relatedChange, amendable, ErrInfoSchemaChanged
 			}
-			return nil, nil, nil, false, ErrInfoSchemaChanged
+			return nil, false, ErrInfoSchemaChanged
 		case ResultUnknown:
 			time.Sleep(time.Duration(schemaOutOfDateRetryInterval))
 		}
 
 	}
 	metrics.SchemaLeaseErrorCounter.WithLabelValues("outdated").Inc()
-	return nil, nil, nil, false, ErrInfoSchemaExpired
+	return nil, false, ErrInfoSchemaExpired
 }

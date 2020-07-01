@@ -46,8 +46,8 @@ var (
 
 // SchemaAmender is used by pessimistic transactions to amend commit mutations for schema change during 2pc
 type SchemaAmender interface {
-	AmendTxnForSchemaChange(ctx context.Context, startTS uint64, commitTs uint64,
-		dbIDs, tblIDs []int64, actionTypes []uint64, mutations CommitterMutations) (*CommitterMutations, *CommitterMutations, error)
+	AmendTxnForSchemaChange(ctx context.Context, startTS uint64, commitTs uint64, change *RelatedSchemaChange,
+		mutations CommitterMutations) (*CommitterMutations, *CommitterMutations, error)
 }
 
 // tikvTxn implements kv.Transaction.
@@ -77,6 +77,7 @@ type tikvTxn struct {
 
 	// SchemaAmender is used amend pessimistic txn commit mutations for schema change
 	schemaAender SchemaAmender
+	schemaVer    int64
 }
 
 func newTiKVTxn(store *tikvStore) (*tikvTxn, error) {
@@ -210,6 +211,8 @@ func (txn *tikvTxn) SetOption(opt kv.Option, val interface{}) {
 		txn.snapshot.setSnapshotTS(val.(uint64))
 	case kv.SchemaAmender:
 		txn.schemaAender = val.(SchemaAmender)
+	case kv.SchemaVer:
+		txn.schemaVer = val.(int64)
 	}
 }
 

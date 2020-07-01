@@ -58,6 +58,8 @@ const (
 	TaskID
 	// SchemaAmender is used to amend mutations for pessimistic transactions
 	SchemaAmender
+	// SchemaVer is schema version used by txn startTS
+	SchemaVer
 )
 
 // Priority value for transaction priority.

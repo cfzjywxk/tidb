@@ -82,7 +82,7 @@ type Domain struct {
 // infoschema version, if it is the same as the schema version at startTS, we don't need to reload again.
 // It returns the latest schema version, the changed table IDs, whether it's a full load and an error.
 func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion int64,
-	startTS uint64) (neededSchemaVersion int64, change relatedSchemaChange, fullLoad bool, err error) {
+	startTS uint64) (neededSchemaVersion int64, change tikv.RelatedSchemaChange, fullLoad bool, err error) {
 	snapshot, err := do.store.GetSnapshot(kv.NewVersion(startTS))
 	if err != nil {
 		return 0, change, fullLoad, err
@@ -127,9 +127,9 @@ func (do *Domain) loadInfoSchema(handle *infoschema.Handle, usedSchemaVersion in
 			zap.Int64("usedSchemaVersion", usedSchemaVersion),
 			zap.Int64("neededSchemaVersion", neededSchemaVersion),
 			zap.Duration("start time", time.Since(startTime)),
-			zap.Int64s("dbIDs", relatedChanges.dbIDs),
-			zap.Int64s("phyTblIDs", relatedChanges.phyTblIDS),
-			zap.Uint64s("actionTypes", relatedChanges.actionTypes))
+			zap.Int64s("dbIDs", relatedChanges.DBIDs),
+			zap.Int64s("phyTblIDs", relatedChanges.PhyTblIDS),
+			zap.Uint64s("actionTypes", relatedChanges.ActionTypes))
 		return neededSchemaVersion, relatedChanges, fullLoad, nil
 	}
 
@@ -232,18 +232,12 @@ func isTooOldSchema(usedVersion, newVersion int64) bool {
 	return false
 }
 
-type relatedSchemaChange struct {
-	dbIDs       []int64
-	phyTblIDS   []int64
-	actionTypes []uint64
-}
-
 // tryLoadSchemaDiffs tries to only load latest schema changes.
 // Return true if the schema is loaded successfully.
 // Return false if the schema can not be loaded by schema diff, then we need to do full load.
 // The second returned value is the delta updated table and partition IDs.
-func (do *Domain) tryLoadSchemaDiffs(m *meta.Meta, usedVersion, newVersion int64) (bool, relatedSchemaChange, error) {
-	relatedChange := relatedSchemaChange{}
+func (do *Domain) tryLoadSchemaDiffs(m *meta.Meta, usedVersion, newVersion int64) (bool, tikv.RelatedSchemaChange, error) {
+	relatedChange := tikv.RelatedSchemaChange{}
 	// If there isn't any used version, or used version is too old, we do full load.
 	// And when users use history read feature, we will set usedVersion to initialVersion, then full load is needed.
 	if isTooOldSchema(usedVersion, newVersion) {
@@ -281,9 +275,9 @@ func (do *Domain) tryLoadSchemaDiffs(m *meta.Meta, usedVersion, newVersion int64
 		}
 	}
 	builder.Build()
-	relatedChange.dbIDs = dbIDs
-	relatedChange.phyTblIDS = phyTblIDs
-	relatedChange.actionTypes = actions
+	relatedChange.DBIDs = dbIDs
+	relatedChange.PhyTblIDS = phyTblIDs
+	relatedChange.ActionTypes = actions
 	return true, relatedChange, nil
 }
 
@@ -372,7 +366,7 @@ func (do *Domain) Reload() error {
 
 	var (
 		fullLoad       bool
-		relatedChanges relatedSchemaChange
+		relatedChanges tikv.RelatedSchemaChange
 	)
 	neededSchemaVersion, relatedChanges, fullLoad, err = do.loadInfoSchema(do.infoHandle, schemaVersion, ver.Ver)
 	metrics.LoadSchemaDuration.Observe(time.Since(startTime).Seconds())

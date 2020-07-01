@@ -1285,30 +1285,28 @@ func (c *twoPhaseCommitter) execute(ctx context.Context) (err error) {
 	// strip check_not_exists Keys that no need to commit.
 	c.stripNoNeedCommitKeys()
 
-	start = time.Now()
-	logutil.Event(ctx, "start get commit ts")
-	commitTS, err := c.store.getTimestampWithRetry(NewBackoffer(ctx, tsoMaxBackoff).WithVars(c.txn.vars))
+	commitTS, err := c.getCommitTS(ctx, commitDetail)
 	if err != nil {
-		logutil.Logger(ctx).Warn("2PC get commitTS failed",
-			zap.Error(err),
-			zap.Uint64("txnStartTS", c.startTS))
 		return errors.Trace(err)
 	}
-	commitDetail.GetCommitTsTime = time.Since(start)
-	logutil.Event(ctx, "finish get commit ts")
-	logutil.SetTag(ctx, "commitTs", commitTS)
 
-	// check commitTS
-	if commitTS <= c.startTS {
-		err = errors.Errorf("conn %d Invalid transaction tso with txnStartTS=%v while txnCommitTS=%v",
-			c.connID, c.startTS, commitTS)
-		logutil.BgLogger().Error("invalid transaction", zap.Error(err))
+	relatedSchemaChange, amended, err := c.checkSchemaValid(ctx, c.startTS, commitTS, c.txn.schemaVer, c.isPessimistic && c.connID > 0)
+	if err != nil {
 		return errors.Trace(err)
+	}
+	if amended {
+		// Get new commitTS and check schema valid again
+		newCommitTS, err := c.getCommitTS(ctx, commitDetail)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		_, _, err = c.checkSchemaValid(ctx, commitTS, newCommitTS, relatedSchemaChange.LatestSchemaVer, false)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		commitTS = newCommitTS
 	}
 	c.commitTS = commitTS
-	if err = c.checkSchemaValid(ctx); err != nil {
-		return errors.Trace(err)
-	}
 
 	if c.store.oracle.IsExpired(c.startTS, kv.MaxTxnTimeUse) {
 		err = errors.Errorf("conn %d txn takes too much time, txnStartTS: %d, comm: %d",
@@ -1378,12 +1376,19 @@ func (c *twoPhaseCommitter) stripNoNeedCommitKeys() {
 }
 
 type schemaLeaseChecker interface {
-	Check(txnTS uint64, getAllChangedInfo bool) ([]int64, []int64, []uint64, bool, error)
+	CheckBySchemaVer(txnTS uint64, startSchemaVer int64, getAllChangedInfo bool) (*RelatedSchemaChange, bool, error)
 }
 
-func (c *twoPhaseCommitter) tryToAmendTxn(ctx context.Context, dbIDs []int64, tblIDs []int64, actionTypes []uint64) (bool, error) {
+type RelatedSchemaChange struct {
+	DBIDs           []int64
+	PhyTblIDS       []int64
+	ActionTypes     []uint64
+	LatestSchemaVer int64
+}
+
+func (c *twoPhaseCommitter) tryToAmendTxn(ctx context.Context, startTS uint64, checkTS uint64, change *RelatedSchemaChange) (bool, error) {
 	addMutations, removeMutations, err := c.txn.schemaAender.AmendTxnForSchemaChange(
-		ctx, c.startTS, c.commitTS, dbIDs, tblIDs, actionTypes, c.mutations)
+		ctx, startTS, checkTS, change, c.mutations)
 	if err != nil {
 		return false, err
 	}
@@ -1411,35 +1416,59 @@ func (c *twoPhaseCommitter) tryToAmendTxn(ctx context.Context, dbIDs []int64, tb
 	return false, nil
 }
 
-func (c *twoPhaseCommitter) checkSchemaValid(ctx context.Context) error {
+func (c *twoPhaseCommitter) getCommitTS(ctx context.Context, commitDetail *execdetails.CommitDetails) (uint64, error) {
+	start := time.Now()
+	logutil.Event(ctx, "start get commit ts")
+	commitTS, err := c.store.getTimestampWithRetry(NewBackoffer(ctx, tsoMaxBackoff).WithVars(c.txn.vars))
+	if err != nil {
+		logutil.Logger(ctx).Warn("2PC get commitTS failed",
+			zap.Error(err),
+			zap.Uint64("txnStartTS", c.startTS))
+		return 0, errors.Trace(err)
+	}
+	commitDetail.GetCommitTsTime = time.Since(start)
+	logutil.Event(ctx, "finish get commit ts")
+	logutil.SetTag(ctx, "commitTs", commitTS)
+
+	// check commitTS
+	if commitTS <= c.startTS {
+		err = errors.Errorf("conn %d Invalid transaction tso with txnStartTS=%v while txnCommitTS=%v",
+			c.connID, c.startTS, commitTS)
+		logutil.BgLogger().Error("invalid transaction", zap.Error(err))
+		return 0, errors.Trace(err)
+	}
+	return commitTS, nil
+}
+
+func (c *twoPhaseCommitter) checkSchemaValid(ctx context.Context, startTS uint64, checkTS uint64, startSchemaVer int64,
+	tryAmend bool) (*RelatedSchemaChange, bool, error) {
 	checker, ok := c.txn.us.GetOption(kv.SchemaChecker).(schemaLeaseChecker)
 	if ok {
-		dbIDs, tblIDs, actionTypes, amendable, err := checker.Check(c.commitTS, c.isPessimistic && c.connID > 0)
-		if c.isPessimistic && c.connID > 0 {
-			log.Warnf("[for debug] check res dbIDs=%v tblIDs=%v actionTypes=%v amendable=%v "+
-				"err=%v schemaAmender=%v", dbIDs, tblIDs, actionTypes, amendable, err, c.txn.schemaAender)
+		relatedSchemChanges, amendable, err := checker.CheckBySchemaVer(checkTS, startSchemaVer, tryAmend)
+		if relatedSchemChanges != nil {
+			log.Warnf("[for debug] relatedSchemChanges=%v amendable=%v err=%v amender=%v", relatedSchemChanges, amendable, err, c.txn.schemaAender)
 		}
 		if err != nil {
-			if amendable && c.isPessimistic && c.connID > 0 && c.txn.schemaAender != nil {
-				// Try to amend for pessimistic transactions
-				log.Warnf("[for debug] start to amend for conn=%v", c.connID)
-				memAmended, amendErr := c.tryToAmendTxn(ctx, dbIDs, tblIDs, actionTypes)
+			if amendable && c.txn.schemaAender != nil {
+				memAmended, amendErr := c.tryToAmendTxn(ctx, startTS, checkTS, relatedSchemChanges)
 				if amendErr != nil {
-					logutil.BgLogger().Warn("txn amend has failed", zap.Uint64("connID", c.connID), zap.Error(amendErr))
-					return err
+					logutil.BgLogger().Warn("txn amend has failed", zap.Uint64("connID", c.connID),
+						zap.Uint64("startTS", c.startTS), zap.Error(amendErr))
+					return nil, false, err
 				}
 				if memAmended {
 					logutil.BgLogger().Info("amend txn successfully for pessimistic commit",
 						zap.Uint64("connID", c.connID), zap.Uint64("startTS", c.startTS),
-						zap.Uint64("commitTS", c.commitTS), zap.Int64s("db ids", dbIDs),
-						zap.Int64s("table ids", tblIDs), zap.Uint64s("action types", actionTypes))
+						zap.Uint64("checkTS", checkTS), zap.Int64s("db ids", relatedSchemChanges.DBIDs),
+						zap.Int64s("table ids", relatedSchemChanges.PhyTblIDS),
+						zap.Uint64s("action types", relatedSchemChanges.ActionTypes))
 				}
-				return nil
+				return relatedSchemChanges, memAmended, nil
 			}
-			return errors.Trace(err)
+			return nil, false, errors.Trace(err)
 		}
 	}
-	return nil
+	return nil, false, nil
 }
 
 func (c *twoPhaseCommitter) prewriteBinlog(ctx context.Context) chan *binloginfo.WriteResult {

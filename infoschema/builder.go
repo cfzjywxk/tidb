@@ -15,7 +15,6 @@ package infoschema
 
 import (
 	"fmt"
-	"github.com/ngaut/log"
 	"sort"
 	"strings"
 
@@ -48,7 +47,6 @@ func (b *Builder) generateDbIDs(dbID int64, tblIDs []int64) []int64 {
 // ApplyDiff applies SchemaDiff to the new InfoSchema.
 // Return the detail updated table IDs that are produced from SchemaDiff and an error.
 func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, []int64, error) {
-	log.Infof("[for debug] diff=%v", *diff)
 	b.is.schemaMetaVersion = diff.Version
 	if diff.Type == model.ActionCreateSchema {
 		return nil, nil, b.applyCreateSchema(m, diff)
@@ -111,14 +109,12 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, []in
 			tmpDbIDs = b.generateDbIDs(dbInfo.ID, tmpIDs)
 		}
 
-		log.Warnf("[for debug] before compare old new db=%v ids=%v tmpDb=%v tmpIDs=%v", dbIDs, tblIDs, tmpDbIDs, tmpIDs)
 		if oldTableID != newTableID {
 			// Update tblIDs only when oldTableID != newTableID because applyCreateTable() also updates tblIDs.
 			tblIDs = tmpIDs
 			dbIDs = tmpDbIDs
 		}
 	}
-	log.Warnf("[for debug] before processing newTable db=%v ids=%v", dbIDs, tblIDs)
 	if tableIDIsValid(newTableID) {
 		// All types except DropTableOrView.
 		var err error
@@ -131,7 +127,6 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, []in
 		createDbIDs = b.generateDbIDs(dbInfo.ID, createTblIDs)
 		dbIDs = append(dbIDs, createDbIDs...)
 		tblIDs = append(tblIDs, createTblIDs...)
-		log.Warnf("[for debug] after processing newTable db=%v ids=%v", dbIDs, tblIDs)
 	}
 	if diff.AffectedOpts != nil {
 		for _, opt := range diff.AffectedOpts {
@@ -150,10 +145,8 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, []in
 			}
 			dbIDs = append(dbIDs, affectedDbIDs...)
 			tblIDs = append(tblIDs, affectedTblIDs...)
-			log.Warnf("[for debug] after processing AffectedOpts ids=%v", tblIDs)
 		}
 	}
-	log.Warnf("[for debug] returned tblIDs db=%v ids=%v", dbIDs, tblIDs)
 	return dbIDs, tblIDs, nil
 }
 

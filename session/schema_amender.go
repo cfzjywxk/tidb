@@ -15,6 +15,7 @@ package session
 
 import (
 	"context"
+	"go.uber.org/zap"
 	"time"
 
 	"github.com/ngaut/log"
@@ -158,7 +159,7 @@ func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 
 // genTableAmendOps generates amend operations for each table with related schema change
 func (a *amendOperations) genTableAmendOps(ctx context.Context, dbID, phyTblID int64, tblInfoAtStart, tblInfoAtCommit *model.TableInfo) error {
-	// TODO GenDropIndexAmendOps
+	// TODO generate needed amend ops
 	// Currently only add index is considered
 	ops, err := a.genAddIndexAmendOps(ctx, dbID, phyTblID, tblInfoAtStart, tblInfoAtCommit)
 	if err != nil {
@@ -339,7 +340,6 @@ func (s *SchemaAmenderForTikvTxn) genMemAmendMutations(ctx context.Context, comm
 	removeMutations := tikv.NewCommiterMutations(8)
 	for i, key := range commitMutations.Keys {
 		if isWriteCommitOp(commitMutations.Ops[i]) {
-			log.Warnf("[for debug] processing key=%v", key)
 			resAddMuts, resRemoveMuts, err := info.genMutations(ctx, s.sess, commitMutations.Ops[i], key, kvMaps)
 			if err != nil {
 				return nil, nil, err
@@ -353,7 +353,7 @@ func (s *SchemaAmenderForTikvTxn) genMemAmendMutations(ctx context.Context, comm
 
 // AmendTxnForSchemaChange generates amend CommiterMutations for the committing transaction
 func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, startTS uint64, commitTs uint64,
-	dbIDs, tblIDs []int64, actionTypes []uint64, commitMutations tikv.CommitterMutations) (
+	change *tikv.RelatedSchemaChange, commitMutations tikv.CommitterMutations) (
 	*tikv.CommitterMutations, *tikv.CommitterMutations, error) {
 	// Get schema meta for startTS and commitTS
 	startTSVer := kv.Version{Ver: startTS}
@@ -372,26 +372,28 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 	// Generate amend operations for each table
 	var needAmendMem bool
 	amendOps := newAmendOperations()
-	for i, tblID := range tblIDs {
+	for i, tblID := range change.PhyTblIDS {
 		// Check amendable flags, return if not supported flags exist
-		if actionTypes[i]&(^amendableType) != 0 {
+		if change.ActionTypes[i]&(^amendableType) != 0 {
 			return nil, nil, table.ErrUnsupportedOp
 		}
 		// Partition table is not supported now
-		tblInfoAtStart, err := startTSMeta.GetTable(dbIDs[i], tblID)
+		tblInfoAtStart, err := startTSMeta.GetTable(change.DBIDs[i], tblID)
 		if err != nil {
 			return nil, nil, err
 		}
 		if tblInfoAtStart.Partition != nil {
+			logutil.Logger(ctx).Info("Unsupported amend found, partition table", zap.Int64("tableID", tblID),
+				zap.Uint64("actionType", change.ActionTypes[i]))
 			return nil, nil, table.ErrUnsupportedOp
 		}
-		tblInfoAtCommit, err := commitTSMeta.GetTable(dbIDs[i], tblID)
+		tblInfoAtCommit, err := commitTSMeta.GetTable(change.DBIDs[i], tblID)
 		if err != nil {
-			return nil, nil, table.ErrUnsupportedOp
+			return nil, nil, err
 		}
-		if actionTypes[i]&(memBufAmendType) != 0 {
+		if change.ActionTypes[i]&(memBufAmendType) != 0 {
 			needAmendMem = true
-			err := amendOps.genTableAmendOps(ctx, dbIDs[i], tblID, tblInfoAtStart, tblInfoAtCommit)
+			err := amendOps.genTableAmendOps(ctx, change.DBIDs[i], tblID, tblInfoAtStart, tblInfoAtCommit)
 			if err != nil {
 				return nil, nil, err
 			}

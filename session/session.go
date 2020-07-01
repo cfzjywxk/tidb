@@ -1454,6 +1454,7 @@ func (s *session) Txn(active bool) (kv.Transaction, error) {
 		if s.sessionVars.GetReplicaRead().IsFollowerRead() {
 			s.txn.SetOption(kv.ReplicaRead, kv.ReplicaReadFollower)
 		}
+		s.txn.SetOption(kv.SchemaVer, s.sessionVars.TxnCtx.SchemaVersion)
 	}
 	return &s.txn, nil
 }
