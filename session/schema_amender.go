@@ -15,6 +15,8 @@ package session
 
 import (
 	"context"
+	"time"
+
 	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	pb "github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -32,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"go.uber.org/zap"
-	"time"
 )
 
 const amendableType = (1 << model.ActionAddColumn) | (1 << model.ActionDropColumn) | (memBufAmendType)

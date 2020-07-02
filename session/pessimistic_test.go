@@ -1451,16 +1451,16 @@ func (s *testPessimisticSuite) TestPessimisticTxnWithDDL(c *C) {
 
 	// Add index test on virtual generated column
 	/*
-	tk.MustExec("drop table if exists t1")
-	tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int generated always as (c1 + c2))")
-	tk.MustExec("insert into t1(c1, c2) values (1, 2), (3, 4)")
+		tk.MustExec("drop table if exists t1")
+		tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int generated always as (c1 + c2))")
+		tk.MustExec("insert into t1(c1, c2) values (1, 2), (3, 4)")
 
-	tk.MustExec("begin pessimistic")
-	tk.MustExec("insert into t1(c1, c2) values(5, 6)")
-	tk2.MustExec("alter table t1 add index k3(c3)")
-	tk.MustExec("commit")
-	tk.MustExec("admin check table t1")
-	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 4").Check(testkit.Rows("7 4"))
-	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 6").Check(testkit.Rows("11 6"))
+		tk.MustExec("begin pessimistic")
+		tk.MustExec("insert into t1(c1, c2) values(5, 6)")
+		tk2.MustExec("alter table t1 add index k3(c3)")
+		tk.MustExec("commit")
+		tk.MustExec("admin check table t1")
+		tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 4").Check(testkit.Rows("7 4"))
+		tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 6").Check(testkit.Rows("11 6"))
 	*/
 }
