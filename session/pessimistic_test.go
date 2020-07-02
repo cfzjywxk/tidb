@@ -1425,44 +1425,70 @@ func (s *testPessimisticSuite) TestPessimisticTxnWithDDLAddIndex(c *C) {
 	tk.MustExec("alter table t1 add index k2(c2)")
 	tk.MustExec("alter table t1 drop index k2")
 
-	// Add index basic test
-	tk.MustExec("drop table if exists t1")
-	tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
-	tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+	type caseUnit struct {
+		tkSqls     []string
+		tk2DDL     string
+		checkSqls  []string
+		rowsExps   []string
+		failCommit bool
+	}
 
-	tk.MustExec("begin pessimistic")
-	tk.MustExec("insert into t1 values(3, 30, 300)")
-	tk2.MustExec("alter table t1 add index k2(c2)")
-	tk.MustExec("commit")
-	tk.MustExec("admin check table t1")
-	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 20").Check(testkit.Rows("200 20"))
-	tk2.MustQuery("select c3, c2 from t1 use index(k2) where c2 = 10").Check(testkit.Rows("100 10"))
+	// The initial t1 table is always in this state
+	// tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
+	// tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+	cases := []caseUnit{
+		// Test secondary index
+		{[]string{"insert into t1 values(3, 30, 300)"},
+			"alter table t1 add index k2(c2)",
+			[]string{"select c3, c2 from t1 use index(k2) where c2 = 20",
+				"select c3, c2 from t1 use index(k2) where c2 = 10"},
+			[]string{"200 20", "100 10"},
+			false},
+		// Test unique index
+		{[]string{"insert into t1 values(3, 30, 300)",
+			"insert into t1 values(4, 40, 400)"},
+			"alter table t1 add unique index uk3(c3)",
+			[]string{"select c3, c2 from t1 use index(uk3) where c3 = 200",
+				"select c3, c2 from t1 use index(uk3) where c3 = 300",
+				"select c3, c2 from t1 use index(uk3) where c3 = 400"},
+			[]string{"200 20", "300 30", "400 40"},
+			false},
+		// Test unique index fail to commit
+		{[]string{"insert into t1 values(3, 30, 300)",
+			"insert into t1 values(4, 40, 300)"},
+			"alter table t1 add unique index uk3(c3)",
+			[]string{"select c3, c2 from t1 use index(uk3) where c3 = 200",
+				"select c3, c2 from t1 use index(uk3) where c3 = 300",
+				"select c3, c2 from t1 where c1 = 4"},
+			[]string{"200 20", "", ""},
+			true},
+	}
 
-	// Add unique index basic test
-	tk.MustExec("drop table if exists t1")
-	tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
-	tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
+	for _, curCase := range cases {
+		tk.MustExec("drop table if exists t1")
+		tk.MustExec("create table t1 (c1 int primary key, c2 int, c3 int)")
+		tk.MustExec("insert t1 values (1, 10, 100), (2, 20, 200)")
 
-	tk.MustExec("begin pessimistic")
-	tk.MustExec("insert into t1 values(3, 30, 300)")
-	tk.MustExec("insert into t1 values(4, 40, 300)")
-	tk2.MustExec("alter table t1 add unique index uk3(c3)")
-	err := tk.ExecToErr("commit")
-	c.Assert(err, NotNil)
-	tk.MustExec("admin check table t1")
-	tk2.MustQuery("select c3, c2 from t1 use index(uk3) where c3 = 200").Check(testkit.Rows("200 20"))
-	tk2.MustQuery("select c3, c2 from t1 use index(uk3) where c3 = 300").Check(nil)
-	tk.MustExec("alter table t1 drop index uk3")
-
-	tk.MustExec("begin pessimistic")
-	tk.MustExec("insert into t1 values(3, 30, 300)")
-	tk.MustExec("insert into t1 values(4, 40, 400)")
-	tk2.MustExec("alter table t1 add unique index uk3(c3)")
-	tk.MustExec("commit")
-	tk.MustExec("admin check table t1")
-	tk2.MustQuery("select c3, c2 from t1 use index(uk3) where c3 = 200").Check(testkit.Rows("200 20"))
-	tk2.MustQuery("select c3, c2 from t1 use index(uk3) where c3 = 300").Check(testkit.Rows("300 30"))
-	tk2.MustQuery("select c3, c2 from t1 use index(uk3) where c3 = 400").Check(testkit.Rows("400 40"))
+		tk.MustExec("begin pessimistic")
+		for _, tkSql := range curCase.tkSqls {
+			tk.MustExec(tkSql)
+		}
+		tk2.MustExec(curCase.tk2DDL)
+		if curCase.failCommit {
+			err := tk.ExecToErr("commit")
+			c.Assert(err, NotNil)
+		} else {
+			tk.MustExec("commit")
+		}
+		tk.MustExec("admin check table t1")
+		for i, checkSql := range curCase.checkSqls {
+			if len(curCase.rowsExps[i]) > 0 {
+				tk2.MustQuery(checkSql).Check(testkit.Rows(curCase.rowsExps[i]))
+			} else {
+				tk2.MustQuery(checkSql).Check(nil)
+			}
+		}
+	}
 	/*
 		// Add index test on virtual generated column
 			tk.MustExec("drop table if exists t1")
