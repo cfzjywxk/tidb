@@ -15,9 +15,8 @@ package session
 
 import (
 	"context"
-	"time"
-
 	"github.com/ngaut/log"
+
 	"github.com/pingcap/errors"
 	pb "github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/parser/model"
@@ -96,30 +95,34 @@ var constOpDropIndex = map[model.SchemaState]map[model.SchemaState]int{
 	},
 }
 
-// amendOperations has all amend operations, row decoders and memory chunks for tables need amend
-type amendOperations struct {
-	tblAmendOpMap map[int64][]amendOperation
+// amendCollector collects all amend operations, row decoders and memory chunks for each table needs amend
+type amendCollector struct {
+	tblAmendOpMap map[int64][]amendOp
 	tblDecoder    map[int64]*rowcodec.ChunkDecoder
 	tblChk        map[int64]*chunk.Chunk
 }
 
-func newAmendOperations() *amendOperations {
-	res := &amendOperations{
-		tblAmendOpMap: make(map[int64][]amendOperation),
+func newAmendCollector() *amendCollector {
+	res := &amendCollector{
+		tblAmendOpMap: make(map[int64][]amendOp),
 		tblDecoder:    make(map[int64]*rowcodec.ChunkDecoder),
 		tblChk:        make(map[int64]*chunk.Chunk),
 	}
 	return res
 }
 
-func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblID int64,
-	tblAtStart, tblAtCommit *model.TableInfo) ([]amendOperation, error) {
-	res := make([]amendOperation, 0, 4)
-	op := amendOperation{}
+func (a *amendCollector) collectIndexAmendOps(ctx context.Context, dbID, phyTblID int64,
+	tblAtStart, tblAtCommit *model.TableInfo) ([]amendOp, error) {
+	res := make([]amendOp, 0, 4)
+	op := amendOperationAddIndex{}
 	op.dbID = dbID
 	op.phyTblID = phyTblID
 	op.tblInfoAtStart = tblAtStart
 	op.tblInfoAtCommit = tblAtCommit
+	op.decoder = a.tblDecoder[phyTblID]
+	op.chk = a.tblChk[phyTblID]
+	op.processedNewIndexKeys = make(map[string]interface{})
+	// Check index having state change, collect index column info
 	for _, idxInfoAtCommit := range tblAtCommit.Indices {
 		op.idxID = idxInfoAtCommit.ID
 		var idxInfoAtStart *model.IndexInfo
@@ -150,32 +153,31 @@ func (a *amendOperations) genAddIndexAmendOps(ctx context.Context, dbID, phyTblI
 					}
 				}
 				if oldColInfo == nil {
-					log.Warnf("column=%v not found in original schema", *idxCol)
 					return nil, table.ErrUnsupportedOp
 				}
 			}
-			res = append(res, op)
+			res = append(res, &op)
 		}
 	}
 	return res, nil
 }
 
-// genTableAmendOps generates amend operations for each table
-func (a *amendOperations) genTableAmendOps(ctx context.Context, sctx sessionctx.Context, dbID, phyTblID int64,
+// collectTblAmendOps collects amend operations for each table using the schema diff between startTS and commitTS
+func (a *amendCollector) collectTblAmendOps(ctx context.Context, sctx sessionctx.Context, dbID, phyTblID int64,
 	tblInfoAtStart, tblInfoAtCommit *model.TableInfo) error {
-	// TODO currently only add index is considered
-	ops, err := a.genAddIndexAmendOps(ctx, dbID, phyTblID, tblInfoAtStart, tblInfoAtCommit)
-	if err != nil {
-		return errors.Trace(err)
-	}
 	if _, ok := a.tblAmendOpMap[phyTblID]; !ok {
-		a.tblAmendOpMap[phyTblID] = make([]amendOperation, 0, 4)
+		a.tblAmendOpMap[phyTblID] = make([]amendOp, 0, 4)
 		a.tblDecoder[phyTblID] = newRowChkDecoder(sctx, tblInfoAtStart)
 		fieldTypes := make([]*types.FieldType, 0, len(tblInfoAtStart.Columns))
 		for _, col := range tblInfoAtStart.Columns {
 			fieldTypes = append(fieldTypes, &col.FieldType)
 		}
 		a.tblChk[phyTblID] = chunk.NewChunkWithCapacity(fieldTypes, 4)
+	}
+	// TODO currently only add index is considered
+	ops, err := a.collectIndexAmendOps(ctx, dbID, phyTblID, tblInfoAtStart, tblInfoAtCommit)
+	if err != nil {
+		return errors.Trace(err)
 	}
 	a.tblAmendOpMap[phyTblID] = append(a.tblAmendOpMap[phyTblID], ops...)
 	return nil
@@ -189,119 +191,152 @@ func isInsertOp(keyOp pb.Op) bool {
 	return keyOp == pb.Op_Put || keyOp == pb.Op_Insert
 }
 
-func (a *amendOperations) genNewIndexKV(sess *session, amendOp *amendOperation, kvMaps map[string][]byte, key []byte,
-	kvHandle kv.Handle, keyOnly bool) ([]byte, []byte, error) {
-	idxPrefix := tablecodec.EncodeTableIndexPrefix(amendOp.phyTblID, amendOp.idxID)
-	colMap := make(map[int64]*types.FieldType)
-	for _, oldCol := range amendOp.tblInfoAtStart.Columns {
-		colMap[oldCol.ID] = &oldCol.FieldType
-	}
-	rowMap, err := tablecodec.DecodeRow(kvMaps[string(key)], colMap, time.UTC)
-	if err != nil {
-		panic("decode err")
-	}
-	rowDecoder := a.tblDecoder[amendOp.phyTblID]
-	chk := a.tblChk[amendOp.phyTblID]
-	val := kvMaps[string(key)]
-	err = rowDecoder.DecodeToChunk(val, kvHandle, chk)
-	if err != nil {
-		panic("decode err")
-	}
-	idxVals := make([]types.Datum, 0, len(amendOp.indexInfoAtCommit.Columns))
-	for _, oldCol := range amendOp.relatedOldIdxCols {
-		//idxVals = append(idxVals, rowMap[oldCol.ID])
-		log.Warnf("[for debug] rowMap_value=%v chk_value=%v", rowMap[oldCol.ID], chk.GetRow(0).GetDatum(oldCol.Offset, &oldCol.FieldType))
-		idxVals = append(idxVals, chk.GetRow(0).GetDatum(oldCol.Offset, &oldCol.FieldType))
-	}
-
-	// Generate index key buf
-	newIdxKey, distinct, err := tablecodec.GenIndexKeyUsingPrefix(sess.GetSessionVars().StmtCtx,
-		amendOp.tblInfoAtCommit, amendOp.indexInfoAtCommit, idxPrefix, idxVals, kvHandle, nil)
-	if err != nil {
-		panic(err)
-	}
-	log.Warnf("newIdxKey=%v", newIdxKey)
-
-	// Generate index value buf
-	var containsNonBinaryString bool
-	for _, idxCol := range amendOp.indexInfoAtCommit.Columns {
-		col := amendOp.tblInfoAtCommit.Columns[idxCol.Offset]
-		if col.EvalType() == types.ETString && !mysql.HasBinaryFlag(col.Flag) {
-			containsNonBinaryString = true
-			break
+func (a *amendCollector) genMutationsForTbl(ctx context.Context, sess *session, commitMutations tikv.CommitterMutations,
+	kvMaps map[string][]byte, phyTblID int64, amendOps []amendOp) (tikv.CommitterMutations, tikv.CommitterMutations, error) {
+	resAddMutations := tikv.NewCommiterMutations(8)
+	resRemoveMutations := tikv.NewCommiterMutations(8)
+	for _, curOp := range amendOps {
+		curAddMutations, curRemoveMutations, err := curOp.genMutations(ctx, sess, commitMutations, kvMaps)
+		if err != nil {
+			return resAddMutations, resRemoveMutations, err
 		}
+		resAddMutations = mergeMutations(resAddMutations, curAddMutations)
+		resRemoveMutations = mergeMutations(resRemoveMutations, curRemoveMutations)
 	}
-	newIdxVal, err := tablecodec.GenIndexValue(sess.GetSessionVars().StmtCtx, amendOp.tblInfoAtCommit,
-		amendOp.indexInfoAtCommit, containsNonBinaryString, distinct, false, idxVals, kvHandle)
-	if err != nil {
-		panic(err)
-	}
-	return newIdxKey, newIdxVal, nil
+	log.Warnf("[for debug] addMutations=%v", resAddMutations)
+	return resAddMutations, resRemoveMutations, nil
 }
 
-// genMutations generates all mutations needed for the input key
-func (a *amendOperations) genMutations(ctx context.Context, sess *session, KeyOp pb.Op, key []byte,
-	kvMaps map[string][]byte) (tikv.CommitterMutations, tikv.CommitterMutations, error) {
-	var resNewMutations tikv.CommitterMutations
-	var resOldMutations tikv.CommitterMutations
-	phyTblID := tablecodec.DecodeTableID(key)
-	if phyTblID == 0 {
-		return resNewMutations, resOldMutations, errors.Errorf("decode key=%x table id results in zero", key)
-	}
-	kvHandle, err := tablecodec.DecodeRowKey(key)
-	if err != nil {
-		panic("decode row key error")
-	}
-	if amendOpArr, ok := a.tblAmendOpMap[phyTblID]; ok {
-		log.Warnf("[for debug] processing key=%x table ops=%v", key, amendOpArr)
-		for _, amendOp := range amendOpArr {
-			if amendOp.AmendOpType == AmendNone {
-				continue
-			}
-			switch amendOp.AmendOpType {
-			case AmendNone:
-			case AmendNeedAddDelete:
-				if isInsertOp(KeyOp) {
-					continue
-				}
-				fallthrough
-			case AmendNeedAddDeleteAndInsert:
-				fallthrough
-			case AmendNeedAddInsert:
-				if isDeleteOp(KeyOp) {
-					continue
-				}
-				newIdxKey, newIdxVal, err := a.genNewIndexKV(sess, &amendOp, kvMaps, key, kvHandle, false)
-				if err != nil {
-					panic(err)
-				}
-				resNewMutations.Ops = append(resNewMutations.Ops, KeyOp)
-				resNewMutations.Keys = append(resNewMutations.Keys, newIdxKey)
-				resNewMutations.Values = append(resNewMutations.Values, newIdxVal)
-				resNewMutations.IsPessimisticLock = append(resNewMutations.IsPessimisticLock, false)
-			case AmendNeedRemoveInsert:
-				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
-			case AmendNeedRemoveInsertAndDelete:
-				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
-			case AmendNeedRemoveDelete:
-				return resNewMutations, resOldMutations, table.ErrUnsupportedOp
-			}
-		}
-	}
-	return resNewMutations, resOldMutations, nil
+type amendOp interface {
+	genMutations(ctx context.Context, sctx sessionctx.Context, commitMutations tikv.CommitterMutations,
+		kvMaps map[string][]byte) (tikv.CommitterMutations, tikv.CommitterMutations, error)
 }
 
-// amendOperation represents one amend operation related to a specific index
-type amendOperation struct {
-	dbID              int64
-	phyTblID          int64
-	idxID             int64
-	AmendOpType       int
+// amendOperationAddIndex represents one amend operation related to a specific add index change
+type amendOperationAddIndex struct {
+	dbID        int64
+	phyTblID    int64
+	idxID       int64
+	AmendOpType int
+
 	tblInfoAtStart    *model.TableInfo
 	tblInfoAtCommit   *model.TableInfo
 	indexInfoAtStart  *model.IndexInfo
 	indexInfoAtCommit *model.IndexInfo
 	relatedOldIdxCols []*model.ColumnInfo
+
+	decoder *rowcodec.ChunkDecoder
+	chk     *chunk.Chunk
+
+	processedNewIndexKeys map[string]interface{}
+}
+
+func (a *amendOperationAddIndex) genMutations(ctx context.Context, sctx sessionctx.Context, commitMutations tikv.CommitterMutations,
+	kvMaps map[string][]byte) (tikv.CommitterMutations, tikv.CommitterMutations, error) {
+	resAddMutations := tikv.NewCommiterMutations(8)
+	resRemoveMutations := tikv.NewCommiterMutations(8)
+	for i, key := range commitMutations.Keys {
+		keyOp := commitMutations.Ops[i]
+		addMutations, removeMutations, err := a.processKey(ctx, sctx, keyOp, key, kvMaps)
+		if err != nil {
+			return resAddMutations, resRemoveMutations, err
+		}
+		if len(addMutations.Keys) > 0 {
+			resAddMutations = mergeMutations(resAddMutations, addMutations)
+		}
+		if len(removeMutations.Keys) > 0 {
+			resRemoveMutations = mergeMutations(resRemoveMutations, removeMutations)
+		}
+	}
+	return resAddMutations, resRemoveMutations, nil
+}
+
+func (a *amendOperationAddIndex) genIndexKeyValue(ctx context.Context, sctx sessionctx.Context, kvMaps map[string][]byte,
+	key []byte, kvHandle kv.Handle, keyOnly bool) ([]byte, []byte, error) {
+	idxPrefix := tablecodec.EncodeTableIndexPrefix(a.phyTblID, a.idxID)
+	colMap := make(map[int64]*types.FieldType)
+	for _, oldCol := range a.tblInfoAtStart.Columns {
+		colMap[oldCol.ID] = &oldCol.FieldType
+	}
+	rowDecoder := a.decoder
+	chk := a.chk
+	chk.Reset()
+	val := kvMaps[string(key)]
+	err := rowDecoder.DecodeToChunk(val, kvHandle, chk)
+	if err != nil {
+		logutil.Logger(ctx).Warn("amend decode value to chunk failed", zap.Int64("tableID", a.phyTblID))
+		return nil, nil, err
+	}
+	idxVals := make([]types.Datum, 0, len(a.indexInfoAtCommit.Columns))
+	for _, oldCol := range a.relatedOldIdxCols {
+		idxVals = append(idxVals, chk.GetRow(0).GetDatum(oldCol.Offset, &oldCol.FieldType))
+	}
+
+	// Generate index key buf
+	newIdxKey, distinct, err := tablecodec.GenIndexKeyUsingPrefix(sctx.GetSessionVars().StmtCtx,
+		a.tblInfoAtCommit, a.indexInfoAtCommit, idxPrefix, idxVals, kvHandle, nil)
+	if err != nil {
+		logutil.Logger(ctx).Warn("amend generate index key failed", zap.Int64("tableID", a.phyTblID),
+			zap.Error(err))
+		return nil, nil, err
+	}
+	if keyOnly {
+		return newIdxKey, []byte{}, nil
+	}
+
+	// Generate index value buf
+	var containsNonBinaryString bool
+	for _, idxCol := range a.indexInfoAtCommit.Columns {
+		col := a.tblInfoAtCommit.Columns[idxCol.Offset]
+		if col.EvalType() == types.ETString && !mysql.HasBinaryFlag(col.Flag) {
+			containsNonBinaryString = true
+			break
+		}
+	}
+	newIdxVal, err := tablecodec.GenIndexValue(sctx.GetSessionVars().StmtCtx, a.tblInfoAtCommit,
+		a.indexInfoAtCommit, containsNonBinaryString, distinct, false, idxVals, kvHandle)
+	if err != nil {
+		logutil.Logger(ctx).Warn("amend generate index values failed", zap.Int64("tableID", a.phyTblID),
+			zap.Error(err))
+		return nil, nil, err
+	}
+	return newIdxKey, newIdxVal, nil
+}
+
+func (a *amendOperationAddIndex) processKey(ctx context.Context, sctx sessionctx.Context, keyOp pb.Op, key []byte,
+	kvMaps map[string][]byte) (resAdd tikv.CommitterMutations, resRemove tikv.CommitterMutations, err error) {
+	if a.AmendOpType == AmendNone {
+		return
+	}
+	kvHandle, err := tablecodec.DecodeRowKey(key)
+	if err != nil {
+		panic("decode row key error")
+	}
+
+	// Generated delete index key value
+	if (a.AmendOpType == AmendNeedAddDelete || a.AmendOpType == AmendNeedAddDeleteAndInsert) && isDeleteOp(keyOp) {
+		newIdxKey, emptyVal, err := a.genIndexKeyValue(ctx, sctx, kvMaps, key, kvHandle, true)
+		if err != nil {
+			return resAdd, resRemove, err
+		}
+		resAdd.Push(keyOp, newIdxKey, emptyVal, false)
+	}
+
+	// Generated insert index key value
+	if (a.AmendOpType == AmendNeedAddDeleteAndInsert || a.AmendOpType == AmendNeedAddInsert) && isInsertOp(keyOp) {
+		newIdxKey, newIdxValue, err := a.genIndexKeyValue(ctx, sctx, kvMaps, key, kvHandle, false)
+		if err != nil {
+			return resAdd, resRemove, err
+		}
+		if a.indexInfoAtCommit.Unique {
+			if _, ok := a.processedNewIndexKeys[string(newIdxKey)]; ok {
+				return resAdd, resRemove, errors.Errorf("amend process key same key found")
+			}
+		}
+		a.processedNewIndexKeys[string(newIdxKey)] = nil
+		resAdd.Push(keyOp, newIdxKey, newIdxValue, false)
+	}
+	return
 }
 
 func mergeMutations(org tikv.CommitterMutations, delta tikv.CommitterMutations) (newMutations tikv.CommitterMutations) {
@@ -341,8 +376,9 @@ func (s *SchemaAmenderForTikvTxn) getAmendableKeys(commitMutations tikv.Committe
 	return kvKeys
 }
 
-func (s *SchemaAmenderForTikvTxn) genMemAmendMutations(ctx context.Context, commitMutations tikv.CommitterMutations,
-	info *amendOperations) (*tikv.CommitterMutations, *tikv.CommitterMutations, error) {
+// genAllAmendMutations generates CommitterMutations for all tables and related amend operations
+func (s *SchemaAmenderForTikvTxn) genAllAmendMutations(ctx context.Context, commitMutations tikv.CommitterMutations,
+	info *amendCollector) (*tikv.CommitterMutations, *tikv.CommitterMutations, error) {
 	// Get keys need to be considered for the amend operation, currently only row keys
 	kvKeys := s.getAmendableKeys(commitMutations)
 
@@ -353,22 +389,33 @@ func (s *SchemaAmenderForTikvTxn) genMemAmendMutations(ctx context.Context, comm
 	}
 	kvMaps, err := txn.BatchGet(ctx, kvKeys)
 	if err != nil {
-		panic(err)
+		logutil.Logger(ctx).Warn("amend failed to batch get kv keys", zap.Error(err))
+		return nil, nil, err
 	}
 
-	// Do generate mutations
+	// Do generate add/remove mutations processing each key
 	addMutations := tikv.NewCommiterMutations(8)
 	removeMutations := tikv.NewCommiterMutations(8)
-	for i, key := range commitMutations.Keys {
-		if isWriteCommitOp(commitMutations.Ops[i]) {
-			resAddMutations, resRemoveMutations, err := info.genMutations(ctx, s.sess, commitMutations.Ops[i], key, kvMaps)
-			if err != nil {
-				return nil, nil, err
-			}
-			addMutations = mergeMutations(addMutations, resAddMutations)
-			removeMutations = mergeMutations(removeMutations, resRemoveMutations)
+	for phyTblID, amendOps := range info.tblAmendOpMap {
+		resAddMutations, resRemoveMutations, err := info.genMutationsForTbl(ctx, s.sess, commitMutations, kvMaps, phyTblID, amendOps)
+		if err != nil {
+			return nil, nil, err
 		}
+		addMutations = mergeMutations(addMutations, resAddMutations)
+		removeMutations = mergeMutations(removeMutations, resRemoveMutations)
 	}
+	/*
+		for i, key := range commitMutations.Keys {
+			if isWriteCommitOp(commitMutations.Ops[i]) {
+				resAddMutations, resRemoveMutations, err := info.genMutationsForKey(ctx, s.sess, commitMutations.Ops[i], key, kvMaps)
+				if err != nil {
+					return nil, nil, err
+				}
+				addMutations = mergeMutations(addMutations, resAddMutations)
+				removeMutations = mergeMutations(removeMutations, resRemoveMutations)
+			}
+		}
+	*/
 	return &addMutations, &removeMutations, nil
 }
 
@@ -392,7 +439,7 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 
 	// Generate amend operations for each table by physical table id
 	var needAmendMem bool
-	amendOps := newAmendOperations()
+	amendCollector := newAmendCollector()
 	for i, tblID := range change.PhyTblIDS {
 		dbID := change.DBIDs[i]
 		actionType := change.ActionTypes[i]
@@ -406,7 +453,8 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 			return nil, nil, err
 		}
 		if tblInfoAtStart.Partition != nil {
-			logutil.Logger(ctx).Info("Amend for partition table is not supported", zap.Uint64("startTS", startTS), zap.Int64("tableID", tblID))
+			logutil.Logger(ctx).Info("Amend for partition table is not supported", zap.Uint64("startTS", startTS),
+				zap.Int64("tableID", tblID))
 			return nil, nil, table.ErrUnsupportedOp
 		}
 		tblInfoAtCommit, err := commitTSMeta.GetTable(dbID, tblID)
@@ -415,14 +463,19 @@ func (s *SchemaAmenderForTikvTxn) AmendTxnForSchemaChange(ctx context.Context, s
 		}
 		if actionType&(memBufAmendType) != 0 {
 			needAmendMem = true
-			err := amendOps.genTableAmendOps(ctx, s.sess, dbID, tblID, tblInfoAtStart, tblInfoAtCommit)
+			err := amendCollector.collectTblAmendOps(ctx, s.sess, dbID, tblID, tblInfoAtStart, tblInfoAtCommit)
 			if err != nil {
 				return nil, nil, err
 			}
 		}
 	}
 	if needAmendMem {
-		return s.genMemAmendMutations(ctx, commitMutations, amendOps)
+		for tblID, ops := range amendCollector.tblAmendOpMap {
+			for _, op := range ops {
+				log.Warnf("tblOD=%v ops=%v", tblID, op)
+			}
+		}
+		return s.genAllAmendMutations(ctx, commitMutations, amendCollector)
 	}
 	return nil, nil, nil
 }

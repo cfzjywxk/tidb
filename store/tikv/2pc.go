@@ -195,7 +195,7 @@ func (c *CommitterMutations) subRange(from, to int) CommitterMutations {
 	return res
 }
 
-func (c *CommitterMutations) push(op pb.Op, key []byte, value []byte, isPessimisticLock bool) {
+func (c *CommitterMutations) Push(op pb.Op, key []byte, value []byte, isPessimisticLock bool) {
 	c.Ops = append(c.Ops, op)
 	c.Keys = append(c.Keys, key)
 	c.Values = append(c.Values, value)
@@ -325,13 +325,13 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 			} else if ord > 0 {
 				break
 			} else {
-				mutations.push(pb.Op_Lock, lockKey, nil, c.isPessimistic)
+				mutations.Push(pb.Op_Lock, lockKey, nil, c.isPessimistic)
 				lockCnt++
 				size += len(lockKey)
 				lockIdx++
 			}
 		}
-		mutations.push(op, k, value, isPessimisticLock)
+		mutations.Push(op, k, value, isPessimisticLock)
 		entrySize := len(k) + len(v)
 		if entrySize > kv.TxnEntrySizeLimit {
 			return kv.ErrEntryTooLarge.GenWithStackByArgs(kv.TxnEntrySizeLimit, entrySize)
@@ -344,7 +344,7 @@ func (c *twoPhaseCommitter) initKeysAndMutations() error {
 	}
 	// add the remaining locks to mutations and Keys
 	for _, lockKey := range txn.lockKeys[lockIdx:] {
-		mutations.push(pb.Op_Lock, lockKey, nil, c.isPessimistic)
+		mutations.Push(pb.Op_Lock, lockKey, nil, c.isPessimistic)
 		lockCnt++
 		size += len(lockKey)
 	}
