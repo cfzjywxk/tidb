@@ -1446,6 +1446,7 @@ func (s *session) Txn(active bool) (kv.Transaction, error) {
 		s.sessionVars.TxnCtx.StartTS = s.txn.StartTS()
 		if s.sessionVars.TxnCtx.IsPessimistic {
 			s.txn.SetOption(kv.Pessimistic, true)
+			s.txn.SetOption(kv.SchemaAmender, NewSchemaAmenderForTikvTxn(s))
 		}
 		if !s.sessionVars.IsAutocommit() {
 			s.sessionVars.SetStatusFlag(mysql.ServerStatusInTrans, true)
@@ -1455,6 +1456,7 @@ func (s *session) Txn(active bool) (kv.Transaction, error) {
 		if s.sessionVars.GetReplicaRead().IsFollowerRead() {
 			s.txn.SetOption(kv.ReplicaRead, kv.ReplicaReadFollower)
 		}
+		s.txn.SetOption(kv.InfoSchema, s.sessionVars.TxnCtx.InfoSchema)
 	}
 	return &s.txn, nil
 }
