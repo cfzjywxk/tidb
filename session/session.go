@@ -407,6 +407,13 @@ func (s *session) doCommit(ctx context.Context) error {
 	if s.txn.IsReadOnly() {
 		return nil
 	}
+	if s.sessionVars.ConnectionID > 0 {
+		if !s.sessionVars.TxnCtx.RetryingTxn {
+			logutil.Logger(ctx).Info("[for debug] mock commit write conflict error")
+			return kv.ErrWriteConflict
+		}
+		logutil.Logger(ctx).Info("[for debug] let retrying txn commit")
+	}
 
 	// mockCommitError and mockGetTSErrorInRetry use to test PR #8743.
 	failpoint.Inject("mockCommitError", func(val failpoint.Value) {
@@ -670,6 +677,7 @@ func (s *session) retry(ctx context.Context, maxCnt uint) (err error) {
 					s.sessionVars.TxnCtx.IsPessimistic = true
 				}
 			}
+			s.sessionVars.TxnCtx.RetryingTxn = true
 		} else {
 			s.PrepareTxnCtx(ctx)
 		}

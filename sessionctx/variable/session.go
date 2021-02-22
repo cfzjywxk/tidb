@@ -162,6 +162,8 @@ type TransactionContext struct {
 
 	// TableDeltaMap lock to prevent potential data race
 	tdmLock sync.Mutex
+
+	RetryingTxn bool
 }
 
 // AddUnchangedRowKey adds an unchanged row key in update statement for pessimistic lock.

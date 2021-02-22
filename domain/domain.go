@@ -1039,6 +1039,7 @@ var RunAutoAnalyze = true
 // It will also start a goroutine to analyze tables automatically.
 // It should be called only once in BootstrapSession.
 func (do *Domain) UpdateTableStatsLoop(ctx sessionctx.Context) error {
+	return nil
 	ctx.GetSessionVars().InRestrictedSQL = true
 	statsHandle := handle.NewHandle(ctx, do.statsLease)
 	atomic.StorePointer(&do.statsHandle, unsafe.Pointer(statsHandle))
