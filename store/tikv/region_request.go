@@ -447,6 +447,23 @@ func (s *RegionRequestSender) sendReqToRegion(bo *Backoffer, rpcCtx *RPCContext,
 				}
 			})
 		}
+		if connID > 0 {
+			if req.Type == tikvrpc.CmdResolveLock {
+				resolveReq := req.Req.(*kvrpcpb.ResolveLockRequest)
+				resolveResp := resp.Resp.(*kvrpcpb.ResolveLockResponse)
+				logutil.Logger(ctx).Info("[for debug]send resolve lock resp",
+					zap.Uint64("startTS", resolveReq.StartVersion),
+					zap.Uint64("commitTS", resolveReq.CommitVersion),
+					zap.Bool("nil resp", resp == nil),
+					zap.Bool("nil resp", resolveResp == nil),
+					zap.Stack("stack"))
+				if resolveResp != nil {
+					logutil.Logger(ctx).Info("[for debug]send resolve lock resp",
+						zap.Stringer("resp.keyErr", resolveResp.Error),
+						zap.Stringer("resp.RegionErr", resolveResp.RegionError))
+				}
+			}
+		}
 
 		if connID > 0 {
 			failpoint.Inject("rpcFailOnRecv", func() {

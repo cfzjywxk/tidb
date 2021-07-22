@@ -343,6 +343,10 @@ func (lr *LockResolver) resolveLocks(bo *Backoffer, callerStartTS uint64, locks 
 			}
 
 			if l.LockType == kvrpcpb.Op_PessimisticLock {
+				logutil.BgLogger().Info("resolveLock pessimistic",
+					zap.String("lock", l.String()),
+					zap.Bool("lite", lite),
+					zap.Stack("stack"))
 				err = lr.resolvePessimisticLock(bo, l, cleanRegions)
 			} else {
 				err = lr.resolveLock(bo, l, status, lite, cleanRegions)
@@ -600,6 +604,7 @@ func (lr *LockResolver) getTxnStatus(bo *Backoffer, txnID uint64, primary []byte
 func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, lite bool, cleanRegions map[RegionVerID]struct{}) error {
 	tikvLockResolverCountWithResolveLocks.Inc()
 	resolveLite := lite || l.TxnSize < bigTxnThreshold
+	resolveLite = false
 	for {
 		loc, err := lr.store.GetRegionCache().LocateKey(bo, l.Key)
 		if err != nil {
@@ -613,6 +618,10 @@ func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, li
 		}
 		if status.IsCommitted() {
 			lreq.CommitVersion = status.CommitTS()
+			logutil.BgLogger().Info("resolveLock commit",
+				zap.String("lock", l.String()),
+				zap.Bool("lite", lite),
+				zap.Stack("stack"))
 		} else {
 			logutil.BgLogger().Info("resolveLock rollback", zap.String("lock", l.String()))
 		}
@@ -624,7 +633,7 @@ func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, li
 			lreq.Keys = [][]byte{l.Key}
 		}
 		req := tikvrpc.NewRequest(tikvrpc.CmdResolveLock, lreq)
-		resp, err := lr.store.SendReq(bo, req, loc.Region, readTimeoutShort)
+		resp, err := lr.store.SendReq(bo, req, loc.Region, ReadTimeoutUltraLong)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -643,6 +652,9 @@ func (lr *LockResolver) resolveLock(bo *Backoffer, l *Lock, status TxnStatus, li
 			return errors.Trace(ErrBodyMissing)
 		}
 		cmdResp := resp.Resp.(*kvrpcpb.ResolveLockResponse)
+		if status.IsCommitted() {
+			logutil.Logger(bo.ctx).Info("[for debug] resolve commit resp", zap.Stringer("resp.keyErr", cmdResp.Error))
+		}
 		if keyErr := cmdResp.GetError(); keyErr != nil {
 			err = errors.Errorf("unexpected resolve err: %s, lock: %v", keyErr, l)
 			logutil.BgLogger().Error("resolveLock error", zap.Error(err))

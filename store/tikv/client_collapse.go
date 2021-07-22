@@ -16,6 +16,9 @@ package tikv
 
 import (
 	"context"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/tidb/util/logutil"
+	"go.uber.org/zap"
 	"strconv"
 	"time"
 
@@ -52,6 +55,11 @@ func (r reqCollapse) SendRequest(ctx context.Context, addr string, req *tikvrpc.
 func (r reqCollapse) tryCollapseRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (canCollapse bool, resp *tikvrpc.Response, err error) {
 	switch req.Type {
 	case tikvrpc.CmdResolveLock:
+		resolveReq := req.Req.(*kvrpcpb.ResolveLockRequest)
+		logutil.Logger(ctx).Info("[for debug send resolve lock request]",
+			zap.Uint64("startTS", resolveReq.StartVersion),
+			zap.Uint64("commitTS", resolveReq.CommitVersion))
+		return
 		resolveLock := req.ResolveLock()
 		if len(resolveLock.Keys) > 0 {
 			// can not collapse resolve lock lite

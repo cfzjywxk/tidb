@@ -16,6 +16,8 @@ package tikv
 
 import (
 	"context"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"go.uber.org/zap"
 	"io"
 	"math"
 	"runtime/trace"
@@ -351,6 +353,14 @@ func (c *rpcClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.R
 	connArray, err := c.getConnArray(addr, enableBatch)
 	if err != nil {
 		return nil, errors.Trace(err)
+	}
+
+	if req.Type == tikvrpc.CmdResolveLock {
+		resolveRes := req.Req.(*kvrpcpb.ResolveLockRequest)
+		logutil.Logger(ctx).Info("[for debug]send resolve lock",
+			zap.Uint64("startTS", resolveRes.StartVersion),
+			zap.Uint64("commitTS", resolveRes.CommitVersion),
+			zap.Stack("stack"))
 	}
 
 	// TiDB RPC server supports batch RPC, but batch connection will send heart beat, It's not necessary since

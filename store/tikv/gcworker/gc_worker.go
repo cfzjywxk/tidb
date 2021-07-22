@@ -238,6 +238,8 @@ func (w *GCWorker) leaderTick(ctx context.Context) error {
 			zap.String("leaderTick on", w.uuid))
 		return nil
 	}
+	logutil.Logger(ctx).Info("[for debug] skip whole gc")
+	return nil
 
 	ok, safePoint, err := w.prepare()
 	if err != nil || !ok {

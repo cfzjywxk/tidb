@@ -545,6 +545,7 @@ func (a *ExecStmt) handlePessimisticDML(ctx context.Context, e Executor) error {
 		return err
 	}
 	txnCtx := sctx.GetSessionVars().TxnCtx
+	errHandled := false
 	for {
 		startPointGetLocking := time.Now()
 		_, err = a.handleNoDelayExecutor(ctx, e)
@@ -575,6 +576,11 @@ func (a *ExecStmt) handlePessimisticDML(ctx context.Context, e Executor) error {
 		var lockKeyStats *execdetails.LockKeysDetails
 		ctx = context.WithValue(ctx, execdetails.LockKeysDetailCtxKey, &lockKeyStats)
 		startLocking := time.Now()
+		if a.Ctx.GetSessionVars().ConnectionID == 1 && !errHandled {
+			sleep := 8 * time.Second
+			logutil.Logger(ctx).Info("[for debug] sleep before lock keys", zap.Duration("duration", sleep))
+			time.Sleep(sleep)
+		}
 		err = txn.LockKeys(ctx, lockCtx, keys...)
 		if lockKeyStats != nil {
 			seVars.StmtCtx.MergeLockKeysExecDetails(lockKeyStats)
@@ -589,6 +595,7 @@ func (a *ExecStmt) handlePessimisticDML(ctx context.Context, e Executor) error {
 			}
 			return err
 		}
+		errHandled = true
 	}
 }
 
@@ -636,6 +643,13 @@ func (a *ExecStmt) handlePessimisticLockError(ctx context.Context, err error) (E
 			zap.String("err", errStr))
 		if conflictCommitTS > forUpdateTS {
 			newForUpdateTS = conflictCommitTS
+		}
+		if a.Ctx.GetSessionVars().ConnectionID == 1 {
+			/*
+			sleep := 8 * time.Second
+			logutil.Logger(ctx).Info("[for debug] sleep before pessimistic retry", zap.Duration("sleep", sleep))
+			time.Sleep(sleep)
+			*/
 		}
 	} else {
 		// this branch if err not nil, always update forUpdateTS to avoid problem described below

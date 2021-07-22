@@ -477,6 +477,11 @@ func (txn *tikvTxn) LockKeys(ctx context.Context, lockCtx *kv.LockCtx, keysInput
 		// If the number of keys greater than 1, it can be on different region,
 		// concurrently execute on multiple regions may lead to deadlock.
 		txn.committer.isFirstLock = len(txn.lockKeys) == 0 && len(keys) == 1
+		if txn.committer.connID == 1 {
+			for _, key := range keys {
+				logutil.Logger(ctx).Info("[for debug] pessimisticLockMutations lock keys", zap.Stringer("key", kv.Key(key)))
+			}
+		}
 		err = txn.committer.pessimisticLockMutations(bo, lockCtx, CommitterMutations{keys: keys})
 		if bo.totalSleep > 0 {
 			atomic.AddInt64(&lockCtx.Stats.BackoffTime, int64(bo.totalSleep)*int64(time.Millisecond))
@@ -572,6 +577,12 @@ func (txn *tikvTxn) asyncPessimisticRollback(ctx context.Context, keys [][]byte)
 				}
 			}
 		})
+		if txn.committer.connID == 1 {
+			sleep := 20 * time.Second
+			logutil.Logger(ctx).Info("[for debug] sleep before asyncPessimisticRollback", zap.Duration("sleep", sleep))
+			time.Sleep(sleep)
+			logutil.Logger(ctx).Info("[for debug] start to")
+		}
 		err := committer.pessimisticRollbackMutations(NewBackofferWithVars(ctx, pessimisticRollbackMaxBackoff, txn.vars), CommitterMutations{keys: keys})
 		if err != nil {
 			logutil.Logger(ctx).Warn("[kv] pessimisticRollback failed.", zap.Error(err))

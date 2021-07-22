@@ -641,7 +641,7 @@ func (c *twoPhaseCommitter) doActionOnGroupMutations(bo *Backoffer, action twoPh
 		}
 	})
 
-	if firstIsPrimary && (actionIsCommit || actionIsCleanup || actionIsPessimiticLock) {
+	if firstIsPrimary && (actionIsCommit || actionIsCleanup) {
 		// primary should be committed/cleanup/pessimistically locked first
 		err = c.doActionOnBatches(bo, action, batches[:1])
 		if err != nil {
@@ -660,6 +660,10 @@ func (c *twoPhaseCommitter) doActionOnGroupMutations(bo *Backoffer, action twoPh
 		// by test suites.
 		secondaryBo := NewBackofferWithVars(context.Background(), CommitMaxBackoff, c.txn.vars)
 		go func() {
+			if c.connID == 1 {
+				logutil.Logger(bo.ctx).Info("[for debug] conn=1 return commit secondary")
+				return
+			}
 			if c.connID > 0 {
 				failpoint.Inject("beforeCommitSecondaries", func(v failpoint.Value) {
 					if s, ok := v.(string); !ok {
@@ -701,7 +705,14 @@ func (c *twoPhaseCommitter) doActionOnBatches(bo *Backoffer, action twoPhaseComm
 			noNeedFork = true
 		}
 	}
+	noNeedFork = false
+	if c.connID == 1 {
+		logutil.Logger(bo.ctx).Info("[for debug] doActionOnBatches", zap.Int("len(batches)", len(batches)))
+	}
 	if noNeedFork {
+		if c.connID == 1 {
+			panic("???")
+		}
 		for _, b := range batches {
 			e := action.handleSingleBatch(c, bo, b)
 			if e != nil {
@@ -977,6 +988,9 @@ func (action actionPessimisticLock) handleSingleBatch(c *twoPhaseCommitter, bo *
 			mut.Assertion = pb.Assertion_NotExist
 		}
 		mutations[i] = mut
+		if c.connID > 0 || c.connID < 3 {
+			logutil.Logger(bo.ctx).Info("[for debug] to lock key", zap.Stringer("key", kv.Key(mut.Key)))
+		}
 	}
 	elapsed := uint64(time.Since(c.txn.startTime) / time.Millisecond)
 	req := tikvrpc.NewRequest(tikvrpc.CmdPessimisticLock, &pb.PessimisticLockRequest{
@@ -1803,6 +1817,7 @@ func (c *twoPhaseCommitter) appendBatchMutationsBySize(b []batchMutations, regio
 	failpoint.Inject("twoPCRequestBatchSizeLimit", func() {
 		limit = 1
 	})
+	limit = 1
 
 	var start, end int
 	for start = 0; start < mutations.len(); start = end {
@@ -1907,19 +1922,21 @@ func (batchExe *batchExecutor) process(batches []batchMutations) error {
 	// check results
 	for i := 0; i < len(batches); i++ {
 		if e := <-ch; e != nil {
-			logutil.Logger(batchExe.backoffer.ctx).Debug("2PC doActionOnBatch failed",
+			logutil.Logger(batchExe.backoffer.ctx).Info("2PC doActionOnBatch failed",
 				zap.Uint64("conn", batchExe.committer.connID),
 				zap.Stringer("action type", batchExe.action),
 				zap.Error(e),
 				zap.Uint64("txnStartTS", batchExe.committer.startTS))
 			// Cancel other requests and return the first error.
+			/*
 			if cancel != nil {
-				logutil.Logger(batchExe.backoffer.ctx).Debug("2PC doActionOnBatch to cancel other actions",
+				logutil.Logger(batchExe.backoffer.ctx).Info("2PC doActionOnBatch to cancel other actions",
 					zap.Uint64("conn", batchExe.committer.connID),
 					zap.Stringer("action type", batchExe.action),
 					zap.Uint64("txnStartTS", batchExe.committer.startTS))
 				cancel()
 			}
+			*/
 			if err == nil {
 				err = e
 			}
