@@ -121,6 +121,7 @@ func (d TiKVDriver) OpenWithOptions(path string, options ...Option) (kv.Storage,
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+	disableGC = true
 
 	pdCli, err := pd.NewClient(etcdAddrs, pd.SecurityOption{
 		CAPath:   d.security.ClusterSSLCA,

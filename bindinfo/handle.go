@@ -397,6 +397,7 @@ func (h *BindHandle) DropBindRecord(originalSQL, db string, binding *Binding) (e
 
 // GCBindRecord physically removes the deleted bind records in mysql.bind_info.
 func (h *BindHandle) GCBindRecord() (err error) {
+	return nil
 	h.bindInfo.Lock()
 	h.sctx.Lock()
 	defer func() {
