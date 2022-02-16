@@ -1317,6 +1317,8 @@ func isolationLevelToPB(level kv.IsoLevel) kvrpcpb.IsolationLevel {
 		return kvrpcpb.IsolationLevel_RC
 	case kv.SI:
 		return kvrpcpb.IsolationLevel_SI
+	case kv.RCCheckTS:
+		return kvrpcpb.IsolationLevel_RCCheckTS
 	default:
 		return kvrpcpb.IsolationLevel_SI
 	}
