@@ -6881,3 +6881,21 @@ func TestIntervalPartition(t *testing.T) {
 
 	RunTest(t, table, false)
 }
+
+func TestShardingIndexGrammar(t *testing.T) {
+	// Test case for the text of the select statement in create view statement.
+	createTableStmt := "CREATE TABLE sbtest1(id INT, k INT, primary key (id) hash by id 5, key k_1 (k) hash by id 5)"
+	p := parser.New()
+	sms, _, err := p.Parse(createTableStmt, "", "")
+	require.NoError(t, err)
+	c, ok := sms[0].(*ast.CreateTableStmt)
+	require.True(t, ok)
+	require.Equal(t, "id", c.Constraints[0].Option.ShardingInfo.ShardingColumn.String())
+	require.Equal(t, uint64(5), c.Constraints[0].Option.ShardingInfo.ShardingNum)
+
+	table := []testCase{
+		{createTableStmt, true, "CREATE TABLE `sbtest1` (`id` INT,`k` INT,PRIMARY KEY(`id`) HASH BY `id` 5,INDEX `k_1`(`k`) HASH BY `id` 5)"},
+	}
+
+	RunTest(t, table, false)
+}

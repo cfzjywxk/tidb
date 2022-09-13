@@ -682,6 +682,11 @@ const (
 	IndexVisibilityInvisible
 )
 
+type ShardingInfo struct {
+	ShardingColumn *ColumnName
+	ShardingNum    uint64
+}
+
 // IndexOption is the index options.
 //
 //	  KEY_BLOCK_SIZE [=] value
@@ -699,6 +704,7 @@ type IndexOption struct {
 	ParserName   model.CIStr
 	Visibility   IndexVisibility
 	PrimaryKeyTp model.PrimaryKeyType
+	ShardingInfo ShardingInfo
 }
 
 // Restore implements Node interface.
@@ -757,6 +763,13 @@ func (n *IndexOption) Restore(ctx *format.RestoreCtx) error {
 		case IndexVisibilityInvisible:
 			ctx.WriteKeyWord("INVISIBLE")
 		}
+	}
+	if n.ShardingInfo.ShardingNum > 0 {
+		ctx.WritePlain("HASH BY")
+		ctx.WritePlain(" ")
+		ctx.WriteName(n.ShardingInfo.ShardingColumn.String())
+		ctx.WritePlain(" ")
+		ctx.WritePlainf("%d", n.ShardingInfo.ShardingNum)
 	}
 	return nil
 }

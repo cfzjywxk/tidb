@@ -1844,6 +1844,15 @@ func BuildTableInfo(
 				}
 			}
 			if tbInfo.PKIsHandle {
+				if constr.Option.ShardingInfo.ShardingNum > 0 {
+					shardColName := constr.Option.ShardingInfo.ShardingColumn.Name.String()
+					shardColumn := model.FindColumnInfo(tbInfo.Columns, shardColName)
+					if shardColumn == nil {
+						return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack("column is used for shard but it does not exist: %s", shardColName)
+					}
+					tbInfo.PKIsHandleShardInfo.ShardingColumn = shardColumn
+					tbInfo.PKIsHandleShardInfo.ShardingNum = constr.Option.ShardingInfo.ShardingNum
+				}
 				continue
 			}
 		}

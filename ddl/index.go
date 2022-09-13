@@ -280,6 +280,16 @@ func BuildIndexInfo(
 		} else {
 			idxInfo.Tp = indexOption.Tp
 		}
+
+		if indexOption.ShardingInfo.ShardingNum > 0 {
+			shardColName := indexOption.ShardingInfo.ShardingColumn.Name.String()
+			shardColumn := model.FindColumnInfo(allTableColumns, shardColName)
+			if shardColumn == nil {
+				return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack("column is used for shard but it does not exist: %s", shardColName)
+			}
+			idxInfo.Shard.ShardingColumn = shardColumn
+			idxInfo.Shard.ShardingNum = indexOption.ShardingInfo.ShardingNum
+		}
 	} else {
 		// Use btree as default index type.
 		idxInfo.Tp = model.IndexTypeBtree
