@@ -16,6 +16,7 @@ package distsql
 
 import (
 	"fmt"
+	"github.com/pingcap/tidb/parser/model"
 	"math"
 	"sort"
 	"sync/atomic"
@@ -86,7 +87,7 @@ func (builder *RequestBuilder) SetMemTracker(tracker *memory.Tracker) *RequestBu
 // br refers it, so have to keep it.
 func (builder *RequestBuilder) SetTableRanges(tid int64, tableRanges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
 	if builder.err == nil {
-		builder.Request.KeyRanges = TableRangesToKVRanges(tid, tableRanges, fb)
+		builder.Request.KeyRanges = TableRangesToKVRanges(tid, tableRanges, fb, nil)
 	}
 	return builder
 }
@@ -113,6 +114,22 @@ func (builder *RequestBuilder) SetIndexRangesForTables(sc *stmtctx.StatementCont
 // "ranges" to "KeyRanges" firstly.
 func (builder *RequestBuilder) SetHandleRanges(sc *stmtctx.StatementContext, tid int64, isCommonHandle bool, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
 	return builder.SetHandleRangesForTables(sc, []int64{tid}, isCommonHandle, ranges, fb)
+}
+
+// SetShardedHandleRanges sets "KeyRanges" for "kv.Request" by converting table handle range
+// "ranges" to "KeyRanges" firstly.
+func (builder *RequestBuilder) SetShardedHandleRanges(sc *stmtctx.StatementContext, ranges []*ranger.Range,
+	fb *statistics.QueryFeedback, tblInfo *model.TableInfo) *RequestBuilder {
+	return builder.SetShardedHandleRangesForTables(sc, tblInfo, ranges, fb)
+}
+
+// SetShardedHandleRangesForTables sets "KeyRanges" for "kv.Request" by converting table handle range
+// "ranges" to "KeyRanges" firstly for multiple tables.
+func (builder *RequestBuilder) SetShardedHandleRangesForTables(sc *stmtctx.StatementContext, tblInfo *model.TableInfo, ranges []*ranger.Range, fb *statistics.QueryFeedback) *RequestBuilder {
+	if builder.err == nil {
+		builder.Request.KeyRanges, builder.err = ShardedTableHandleRangesToKVRanges(sc, tblInfo, ranges, fb)
+	}
+	return builder
 }
 
 // SetHandleRangesForTables sets "KeyRanges" for "kv.Request" by converting table handle range
@@ -378,22 +395,52 @@ func (builder *RequestBuilder) SetClosestReplicaReadAdjuster(chkFn kv.CoprReques
 // TableHandleRangesToKVRanges convert table handle ranges to "KeyRanges" for multiple tables.
 func TableHandleRangesToKVRanges(sc *stmtctx.StatementContext, tid []int64, isCommonHandle bool, ranges []*ranger.Range, fb *statistics.QueryFeedback) ([]kv.KeyRange, error) {
 	if !isCommonHandle {
-		return tablesRangesToKVRanges(tid, ranges, fb), nil
+		return tablesRangesToKVRanges(tid, ranges, fb, nil), nil
 	}
-	return CommonHandleRangesToKVRanges(sc, tid, ranges)
+	return CommonHandleRangesToKVRanges(sc, tid, ranges, nil)
+}
+
+// ShardedTableHandleRangesToKVRanges convert table handle ranges to "KeyRanges" for multiple tables.
+func ShardedTableHandleRangesToKVRanges(sc *stmtctx.StatementContext, tblInfo *model.TableInfo,
+	ranges []*ranger.Range, fb *statistics.QueryFeedback) ([]kv.KeyRange, error) {
+	if !tblInfo.IsCommonHandle {
+		return tablesRangesToKVRanges([]int64{tblInfo.ID}, ranges, fb, []*model.TableInfo{tblInfo}), nil
+	}
+	return CommonHandleRangesToKVRanges(sc, []int64{tblInfo.ID}, ranges, []*model.TableInfo{tblInfo})
 }
 
 // TableRangesToKVRanges converts table ranges to "KeyRange".
 // Note this function should not be exported, but currently
 // br refers to it, so have to keep it.
-func TableRangesToKVRanges(tid int64, ranges []*ranger.Range, fb *statistics.QueryFeedback) []kv.KeyRange {
-	return tablesRangesToKVRanges([]int64{tid}, ranges, fb)
+func TableRangesToKVRanges(tid int64, ranges []*ranger.Range, fb *statistics.QueryFeedback, tblInfo *model.TableInfo) []kv.KeyRange {
+	return tablesRangesToKVRanges([]int64{tid}, ranges, fb, []*model.TableInfo{tblInfo})
+}
+
+func genKvRangeKeys(krs []kv.KeyRange, tids []int64, tblInfos []*model.TableInfo, low kv.Key, high kv.Key) []kv.KeyRange {
+	for i, tid := range tids {
+		if tblInfos == nil || tblInfos[i].RowKeyShardedColumn == nil {
+			startKey := tablecodec.EncodeRowKey(tid, low)
+			endKey := tablecodec.EncodeRowKey(tid, high)
+			krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
+		} else {
+			shardStep := uint16(math.MaxUint16 / tblInfos[i].ShardingInfo.ShardingNum)
+			shardID := uint16(0)
+			shardNum := int(tblInfos[i].ShardingInfo.ShardingNum)
+			for k := 0; k < shardNum; k++ {
+				startKey := tablecodec.GenTableShardedRecordPrefixWithShardIDRange(tid, shardID, low)
+				endKey := tablecodec.GenTableShardedRecordPrefixWithShardIDRange(tid, shardID+shardStep-1, high)
+				shardID += shardStep
+				krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
+			}
+		}
+	}
+	return krs
 }
 
 // tablesRangesToKVRanges converts table ranges to "KeyRange".
-func tablesRangesToKVRanges(tids []int64, ranges []*ranger.Range, fb *statistics.QueryFeedback) []kv.KeyRange {
+func tablesRangesToKVRanges(tids []int64, ranges []*ranger.Range, fb *statistics.QueryFeedback, tblInfos []*model.TableInfo) []kv.KeyRange {
 	if fb == nil || fb.Hist == nil {
-		return tableRangesToKVRangesWithoutSplit(tids, ranges)
+		return tableRangesToKVRangesWithoutSplit(tids, ranges, tblInfos)
 	}
 	krs := make([]kv.KeyRange, 0, len(ranges))
 	feedbackRanges := make([]*ranger.Range, 0, len(ranges))
@@ -413,25 +460,17 @@ func tablesRangesToKVRanges(tids []int64, ranges []*ranger.Range, fb *statistics
 		if !ran.HighExclude {
 			high = kv.Key(high).PrefixNext()
 		}
-		for _, tid := range tids {
-			startKey := tablecodec.EncodeRowKey(tid, low)
-			endKey := tablecodec.EncodeRowKey(tid, high)
-			krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
-		}
+		krs = genKvRangeKeys(krs, tids, tblInfos, low, high)
 	}
 	fb.StoreRanges(feedbackRanges)
 	return krs
 }
 
-func tableRangesToKVRangesWithoutSplit(tids []int64, ranges []*ranger.Range) []kv.KeyRange {
+func tableRangesToKVRangesWithoutSplit(tids []int64, ranges []*ranger.Range, tblInfos []*model.TableInfo) []kv.KeyRange {
 	krs := make([]kv.KeyRange, 0, len(ranges)*len(tids))
 	for _, ran := range ranges {
 		low, high := encodeHandleKey(ran)
-		for _, tid := range tids {
-			startKey := tablecodec.EncodeRowKey(tid, low)
-			endKey := tablecodec.EncodeRowKey(tid, high)
-			krs = append(krs, kv.KeyRange{StartKey: startKey, EndKey: endKey})
-		}
+		krs = genKvRangeKeys(krs, tids, tblInfos, low, high)
 	}
 	return krs
 }
@@ -643,7 +682,7 @@ func indexRangesToKVRangesForTablesWithInterruptSignal(sc *stmtctx.StatementCont
 }
 
 // CommonHandleRangesToKVRanges converts common handle ranges to "KeyRange".
-func CommonHandleRangesToKVRanges(sc *stmtctx.StatementContext, tids []int64, ranges []*ranger.Range) ([]kv.KeyRange, error) {
+func CommonHandleRangesToKVRanges(sc *stmtctx.StatementContext, tids []int64, ranges []*ranger.Range, tableInfos []*model.TableInfo) ([]kv.KeyRange, error) {
 	rans := make([]*ranger.Range, 0, len(ranges))
 	for _, ran := range ranges {
 		low, high, err := EncodeIndexKey(sc, ran)

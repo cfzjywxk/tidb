@@ -637,6 +637,9 @@ func getPhysicalTableRegions(physicalTableID int64, tableInfo *model.TableInfo, 
 	}
 	// for record
 	startKey, endKey := tablecodec.GetTableHandleKeyRange(physicalTableID)
+	if tableInfo.RowKeyShardedColumn != nil {
+		endKey = tablecodec.GetTableShardEndKey(physicalTableID)
+	}
 	regionCache := tikvStore.GetRegionCache()
 	recordRegionMetas, err := regionCache.LoadRegionsInKeyRange(tikv.NewBackofferWithVars(context.Background(), 20000, nil), startKey, endKey)
 	if err != nil {

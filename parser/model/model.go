@@ -398,7 +398,8 @@ type TableInfo struct {
 	State       SchemaState       `json:"state"`
 	// PKIsHandle is true when primary key is a single integer column.
 	PKIsHandle          bool         `json:"pk_is_handle"`
-	PKIsHandleShardInfo ShardingInfo `json:"sharding_info"`
+	ShardingInfo        ShardingInfo `json:"sharding_info"`
+	RowKeyShardedColumn *ColumnInfo  `json:"row_key_sharded_column"`
 	// IsCommonHandle is true when clustered index feature is
 	// enabled and the primary key is not a single integer column.
 	IsCommonHandle bool `json:"is_common_handle"`

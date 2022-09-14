@@ -1844,14 +1844,15 @@ func BuildTableInfo(
 				}
 			}
 			if tbInfo.PKIsHandle {
-				if constr.Option.ShardingInfo.ShardingNum > 0 {
+				if constr.Option != nil && constr.Option.ShardingInfo.ShardingNum > 0 {
 					shardColName := constr.Option.ShardingInfo.ShardingColumn.Name.String()
 					shardColumn := model.FindColumnInfo(tbInfo.Columns, shardColName)
 					if shardColumn == nil {
 						return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack("column is used for shard but it does not exist: %s", shardColName)
 					}
-					tbInfo.PKIsHandleShardInfo.ShardingColumn = shardColumn
-					tbInfo.PKIsHandleShardInfo.ShardingNum = constr.Option.ShardingInfo.ShardingNum
+					tbInfo.ShardingInfo.ShardingColumn = shardColumn
+					tbInfo.ShardingInfo.ShardingNum = constr.Option.ShardingInfo.ShardingNum
+					tbInfo.RowKeyShardedColumn = shardColumn
 				}
 				continue
 			}
@@ -1905,6 +1906,12 @@ func BuildTableInfo(
 			return nil, errors.Trace(err)
 		}
 		idxInfo.ID = AllocateIndexID(tbInfo)
+
+		if idxInfo.IsShardedIndex() && idxInfo.Primary {
+			tbInfo.RowKeyShardedColumn = idxInfo.Shard.ShardingColumn
+			tbInfo.ShardingInfo = idxInfo.Shard
+		}
+
 		tbInfo.Indices = append(tbInfo.Indices, idxInfo)
 	}
 

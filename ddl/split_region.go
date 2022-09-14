@@ -16,6 +16,8 @@ package ddl
 
 import (
 	"context"
+	"fmt"
+	"math"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/kv"
@@ -50,6 +52,29 @@ func splitPartitionTableRegion(ctx sessionctx.Context, store kv.SplittableStore,
 	}
 }
 
+func calculateShardSplitKeys(tbInfo *model.TableInfo) [][]byte {
+	if tbInfo.RowKeyShardedColumn == nil {
+		panic(fmt.Sprintf("table=%v is not sharded", tbInfo.Name.String()))
+	}
+	shardNum := tbInfo.ShardingInfo.ShardingNum
+	keys := make([][]byte, 0, shardNum)
+	// The table space start key.
+	tableStartKey := tablecodec.GenTablePrefix(tbInfo.ID)
+	keys = append(keys, tableStartKey)
+
+	// The shard space start key and shard keys.
+	shardStep := uint16(math.MaxUint16 / shardNum)
+	shardID := uint16(0)
+	for i := 0; i < int(shardNum); i++ {
+		if shardID > math.MaxUint16-shardStep {
+			panic("shardID would overflow")
+		}
+		keys = append(keys, tablecodec.GenTableShardedRecordPrefixWithShardID(tbInfo.ID, shardID))
+		shardID += shardStep
+	}
+	return keys
+}
+
 func splitTableRegion(ctx sessionctx.Context, store kv.SplittableStore, tbInfo *model.TableInfo, scatter bool) {
 	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), ctx.GetSessionVars().GetSplitRegionTimeout())
 	defer cancel()
@@ -58,7 +83,17 @@ func splitTableRegion(ctx sessionctx.Context, store kv.SplittableStore, tbInfo *
 	if shardingBits(tbInfo) > 0 && tbInfo.PreSplitRegions > 0 {
 		regionIDs = preSplitPhysicalTableByShardRowID(ctxWithTimeout, store, tbInfo, tbInfo.ID, scatter)
 	} else {
-		regionIDs = append(regionIDs, splitRecordRegion(ctxWithTimeout, store, tbInfo.ID, scatter))
+		if tbInfo.RowKeyShardedColumn == nil {
+			regionIDs = append(regionIDs, splitRecordRegion(ctxWithTimeout, store, tbInfo.ID, scatter))
+		} else {
+			var err error
+			regionIDs, err = store.SplitRegions(ctxWithTimeout, calculateShardSplitKeys(tbInfo), scatter, &tbInfo.ID)
+			if err != nil {
+				// It will be automatically split by TiKV later.
+				logutil.BgLogger().Warn("[ddl] split sharded table region failed", zap.Error(err))
+				return
+			}
+		}
 	}
 	if scatter {
 		waitScatterRegionFinish(ctxWithTimeout, store, regionIDs...)

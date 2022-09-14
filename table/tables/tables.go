@@ -20,6 +20,8 @@ package tables
 
 import (
 	"context"
+	"fmt"
+	"github.com/pingcap/tidb/util/vitess"
 	"math"
 	"strconv"
 	"strings"
@@ -71,8 +73,9 @@ type TableCommon struct {
 	sequence                        *sequenceCommon
 
 	// recordPrefix and indexPrefix are generated using physicalTableID.
-	recordPrefix kv.Key
-	indexPrefix  kv.Key
+	recordPrefix        kv.Key
+	indexPrefix         kv.Key
+	shardedRecordPrefix kv.Key
 }
 
 // MockTableFromMeta only serves for test.
@@ -175,6 +178,7 @@ func initTableCommon(t *TableCommon, tblInfo *model.TableInfo, physicalTableID i
 	t.FullHiddenColsAndVisibleColumns = t.FullHiddenColsAndVisibleCols()
 	t.recordPrefix = tablecodec.GenTableRecordPrefix(physicalTableID)
 	t.indexPrefix = tablecodec.GenTableIndexPrefix(physicalTableID)
+	t.shardedRecordPrefix = tablecodec.GenTableShardedPrefix(physicalTableID)
 	if tblInfo.IsSequence() {
 		t.sequence = &sequenceCommon{meta: tblInfo.Sequence}
 	}
@@ -321,6 +325,19 @@ func (t *TableCommon) RecordPrefix() kv.Key {
 	return t.recordPrefix
 }
 
+// ShardedRecordKey returns shared row key.
+func (t *TableCommon) ShardedRecordKey(h kv.Handle, row []types.Datum) (kv.Key, error) {
+	if t.meta.RowKeyShardedColumn == nil {
+		panic(fmt.Sprintf("ShardedRecordKey is called but table=%v is not sharded", t.meta.Name.String()))
+	}
+	hashRes, err := vitess.HashUint64(row[t.meta.RowKeyShardedColumn.Offset].GetUint64())
+	if err != nil {
+		return nil, err
+	}
+	shardID := uint16(hashRes)
+	return tablecodec.EncodeShardedRecordKey(t.shardedRecordPrefix, shardID, h), nil
+}
+
 // RecordKey implements table.Table interface.
 func (t *TableCommon) RecordKey(h kv.Handle) kv.Key {
 	return tablecodec.EncodeRecordKey(t.recordPrefix, h)
@@ -421,7 +438,22 @@ func (t *TableCommon) UpdateRecord(ctx context.Context, sctx sessionctx.Context,
 		}
 	}
 
-	key := t.RecordKey(h)
+	var key kv.Key
+	if t.meta.RowKeyShardedColumn != nil {
+		var keyErr error
+		key, keyErr = t.ShardedRecordKey(h, oldData)
+		if keyErr != nil {
+			logutil.BgLogger().Error("error calculating the sharded record key in UpdateRecord", zap.Error(keyErr))
+			return keyErr
+		}
+	} else {
+		key = t.RecordKey(h)
+	}
+	if sctx.GetSessionVars().ConnectionID > 0 {
+		logutil.BgLogger().Info("[for debug] UpdateRecord is called",
+			zap.Stringer("key", key),
+			zap.Bool("isShardedKey", t.meta.RowKeyShardedColumn != nil))
+	}
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
 	value, err := tablecodec.EncodeRow(sc, row, colIDs, nil, nil, rd)
 	if err != nil {
@@ -497,6 +529,10 @@ func (t *TableCommon) rebuildIndices(ctx sessionctx.Context, txn kv.Transaction,
 			oldVs, err := idx.FetchValues(oldData, nil)
 			if err != nil {
 				return err
+			}
+			// TODO: A dirty hack, append the sharded column value to the end of the indexedValues, try to use a better way.
+			if idx.Meta().IsShardedIndex() {
+				oldVs = append(oldVs, oldData[idx.Meta().Shard.ShardingColumn.Offset])
 			}
 			if err = t.removeRowIndex(ctx.GetSessionVars().StmtCtx, h, oldVs, idx, txn); err != nil {
 				return err
@@ -811,7 +847,22 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 
 	writeBufs := sessVars.GetWriteStmtBufs()
 	adjustRowValuesBuf(writeBufs, len(row))
-	key := t.RecordKey(recordID)
+	var key kv.Key
+	if t.meta.RowKeyShardedColumn != nil {
+		var keyErr error
+		key, keyErr = t.ShardedRecordKey(recordID, r)
+		if keyErr != nil {
+			logutil.Logger(ctx).Error("error calculating the sharded record key in AddRecord", zap.Error(keyErr))
+			return nil, keyErr
+		}
+	} else {
+		key = t.RecordKey(recordID)
+	}
+	if sctx.GetSessionVars().ConnectionID > 0 {
+		logutil.Logger(ctx).Info("[for debug] addRecord is called",
+			zap.Stringer("key", key),
+			zap.Bool("isShardedKey", t.meta.RowKeyShardedColumn != nil))
+	}
 	logutil.BgLogger().Debug("addRecord",
 		zap.Stringer("key", key))
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder
@@ -969,6 +1020,10 @@ func (t *TableCommon) addIndices(sctx sessionctx.Context, recordID kv.Handle, r 
 			dupErr = kv.ErrKeyExists.FastGenByArgs(entryKey, idxMeta.Name.String())
 		}
 		rsData := TryGetHandleRestoredDataWrapper(t, r, nil, v.Meta())
+		// TODO: A dirty hack, append the sharded column value to the end of the indexedValues, try to use a better way.
+		if v.Meta().IsShardedIndex() {
+			indexVals = append(indexVals, r[v.Meta().Shard.ShardingColumn.Offset])
+		}
 		if dupHandle, err := v.Create(sctx, txn, indexVals, recordID, rsData, opts...); err != nil {
 			if kv.ErrKeyExists.Equal(err) {
 				return dupHandle, dupErr
@@ -1119,7 +1174,7 @@ func (t *TableCommon) RemoveRecord(ctx sessionctx.Context, h kv.Handle, r []type
 	sh := memBuffer.Staging()
 	defer memBuffer.Cleanup(sh)
 
-	err = t.removeRowData(ctx, h)
+	err = t.removeRowData(ctx, h, r)
 	if err != nil {
 		return err
 	}
@@ -1270,14 +1325,29 @@ func writeSequenceUpdateValueBinlog(sctx sessionctx.Context, db, sequence string
 	return err
 }
 
-func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle) error {
+func (t *TableCommon) removeRowData(ctx sessionctx.Context, h kv.Handle, r []types.Datum) error {
 	// Remove row data.
 	txn, err := ctx.Txn(true)
 	if err != nil {
 		return err
 	}
 
-	key := t.RecordKey(h)
+	var key kv.Key
+	if t.meta.RowKeyShardedColumn != nil {
+		var keyErr error
+		key, keyErr = t.ShardedRecordKey(h, r)
+		if keyErr != nil {
+			logutil.BgLogger().Error("error calculating the sharded record key in removeRowData", zap.Error(keyErr))
+			return keyErr
+		}
+	} else {
+		key = t.RecordKey(h)
+	}
+	if ctx.GetSessionVars().ConnectionID > 0 {
+		logutil.BgLogger().Info("[for debug] removeRowData is called",
+			zap.Stringer("key", key),
+			zap.Bool("isShardedKey", t.meta.RowKeyShardedColumn != nil))
+	}
 	failpoint.Inject("removeRecordForceAssertNotExist", func() {
 		// Assert the key doesn't exist while it actually exists. This is helpful to test if assertion takes effect.
 		// Since only the first assertion takes effect, set the injected assertion before setting the correct one to
@@ -1311,6 +1381,10 @@ func (t *TableCommon) removeRowIndices(ctx sessionctx.Context, h kv.Handle, rec 
 			logutil.BgLogger().Info("remove row index failed", zap.Any("index", v.Meta()), zap.Uint64("txnStartTS", txn.StartTS()), zap.String("handle", h.String()), zap.Any("record", rec), zap.Error(err))
 			return err
 		}
+		// TODO: A dirty hack, append the sharded column value to the end of the indexedValues, try to use a better way.
+		if v.Meta().IsShardedIndex() {
+			vals = append(vals, rec[v.Meta().Shard.ShardingColumn.Offset])
+		}
 		if err = v.Delete(ctx.GetSessionVars().StmtCtx, txn, vals, h); err != nil {
 			if v.Meta().State != model.StatePublic && kv.ErrNotExist.Equal(err) {
 				// If the index is not in public state, we may have not created the index,
@@ -1337,7 +1411,14 @@ func (t *TableCommon) buildIndexForRow(ctx sessionctx.Context, h kv.Handle, vals
 		opts = append(opts, table.IndexIsUntouched)
 	}
 	rsData := TryGetHandleRestoredDataWrapper(t, newData, nil, idx.Meta())
-	if _, err := idx.Create(ctx, txn, vals, h, rsData, opts...); err != nil {
+	// TODO: A dirty hack, append the sharded column value to the end of the indexedValues, try to use a better way.
+	idxValues := vals
+	if idx.Meta().IsShardedIndex() {
+		idxValues = make([]types.Datum, len(vals))
+		copy(idxValues, vals)
+		idxValues = append(idxValues, newData[idx.Meta().Shard.ShardingColumn.Offset])
+	}
+	if _, err := idx.Create(ctx, txn, idxValues, h, rsData, opts...); err != nil {
 		if kv.ErrKeyExists.Equal(err) {
 			// Make error message consistent with MySQL.
 			entryKey, err1 := genIndexKeyStr(vals)

@@ -243,7 +243,7 @@ func (e *IndexReaderExecutor) Next(ctx context.Context, req *chunk.Chunk) error 
 
 func (e *IndexReaderExecutor) buildKeyRanges(sc *stmtctx.StatementContext, ranges []*ranger.Range, physicalID int64) ([]kv.KeyRange, error) {
 	if e.index.ID == -1 {
-		return distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, ranges)
+		return distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, ranges, nil)
 	}
 	return distsql.IndexRangesToKVRanges(sc, physicalID, e.index.ID, ranges, e.feedback)
 }
@@ -472,7 +472,7 @@ func (e *IndexLookUpExecutor) buildTableKeyRanges() (err error) {
 			}
 			var kvRange []kv.KeyRange
 			if e.index.ID == -1 {
-				kvRange, err = distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, ranges)
+				kvRange, err = distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, ranges, nil)
 			} else {
 				kvRange, err = distsql.IndexRangesToKVRanges(sc, physicalID, e.index.ID, ranges, e.feedback)
 			}
@@ -484,7 +484,7 @@ func (e *IndexLookUpExecutor) buildTableKeyRanges() (err error) {
 	} else {
 		physicalID := getPhysicalTableID(e.table)
 		if e.index.ID == -1 {
-			e.kvRanges, err = distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, e.ranges)
+			e.kvRanges, err = distsql.CommonHandleRangesToKVRanges(sc, []int64{physicalID}, e.ranges, nil)
 		} else {
 			e.kvRanges, err = distsql.IndexRangesToKVRanges(sc, physicalID, e.index.ID, e.ranges, e.feedback)
 		}

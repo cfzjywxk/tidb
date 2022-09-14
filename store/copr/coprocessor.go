@@ -171,6 +171,7 @@ func (c *CopClient) Send(ctx context.Context, req *kv.Request, variables interfa
 	}
 
 	ctx = context.WithValue(ctx, tikv.RPCCancellerCtxKey{}, it.rpcCancel)
+	it.connID = option.ConnectionID
 	it.open(ctx, enabledRateLimitAction, option.EnableCollectExecutionInfo)
 	return it
 }
@@ -333,6 +334,8 @@ type copIterator struct {
 	committedLocks util.TSSet
 
 	actionOnExceed *rateLimitAction
+
+	connID uint64
 }
 
 // copIteratorWorker receives tasks from copIteratorTaskSender, handles tasks and sends the copResponse to respChan.
@@ -351,6 +354,8 @@ type copIteratorWorker struct {
 	replicaReadSeed uint32
 
 	enableCollectExecutionInfo bool
+
+	connID uint64
 }
 
 // copIteratorTaskSender sends tasks to taskCh then wait for the workers to exit.
@@ -472,6 +477,7 @@ func (it *copIterator) open(ctx context.Context, enabledRateLimitAction, enableC
 			memTracker:                 it.memTracker,
 			replicaReadSeed:            it.replicaReadSeed,
 			enableCollectExecutionInfo: enableCollectExecutionInfo,
+			connID:                     it.connID,
 		}
 		go worker.run(ctx)
 	}
@@ -620,12 +626,29 @@ func (it *copIterator) Next(ctx context.Context) (kv.ResultSubset, error) {
 	})
 	// If data order matters, response should be returned in the same order as copTask slice.
 	// Otherwise all responses are returned from a single channel.
+	if it.connID > 0 {
+		logutil.Logger(ctx).Info("[for debug] copIterator.Next >>>")
+		defer func() {
+			logutil.Logger(ctx).Info("[for debug] copIterator.Next <<<")
+		}()
+	}
 	if it.respChan != nil {
 		// Get next fetched resp from chan
 		resp, ok, closed = it.recvFromRespCh(ctx, it.respChan)
+		if it.connID > 0 {
+			logutil.Logger(ctx).Info("[for debug] recvFromRespCh",
+				zap.Bool("ok", ok),
+				zap.Bool("closed", closed))
+		}
 		if !ok || closed {
 			it.actionOnExceed.close()
 			return nil, nil
+		}
+		if it.connID > 0 && resp != nil {
+			logutil.Logger(ctx).Info("[for debug] recvFromRespCh",
+				zap.Stringer("resp", resp.pbResp),
+				zap.Bool("ok", ok),
+				zap.Bool("closed", closed))
 		}
 		if resp == finCopResp {
 			it.actionOnExceed.destroyTokenIfNeeded(func() {
@@ -802,6 +825,10 @@ func (worker *copIteratorWorker) handleTaskOnce(bo *Backoffer, task *copTask, ch
 	task.storeAddr = storeAddr
 	costTime := time.Since(startTime)
 	copResp := resp.Resp.(*coprocessor.Response)
+
+	if worker.connID > 0 {
+		logutil.BgLogger().Info("[for debug] the cop response in worker", zap.Stringer("resp", copResp))
+	}
 
 	if costTime > minLogCopTaskTime {
 		worker.logTimeCopTask(costTime, task, bo, copResp)

@@ -270,6 +270,7 @@ type ClientSendOption struct {
 	EnabledRateLimitAction     bool
 	EventCb                    trxevents.EventCallback
 	EnableCollectExecutionInfo bool
+	ConnectionID               uint64
 }
 
 // ReqTypes.
