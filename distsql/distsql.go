@@ -63,13 +63,6 @@ func DispatchMPPTasks(ctx context.Context, sctx sessionctx.Context, tasks []*kv.
 // Select sends a DAG request, returns SelectResult.
 // In kvReq, KeyRanges is required, Concurrency/KeepOrder/Desc/IsolationLevel/Priority are optional.
 func Select(ctx context.Context, sctx sessionctx.Context, kvReq *kv.Request, fieldTypes []*types.FieldType, fb *statistics.QueryFeedback) (SelectResult, error) {
-	if sctx.GetSessionVars().ConnectionID > 0 {
-		if len(kvReq.KeyRanges) > 0 {
-			logutil.Logger(ctx).Info("[for debug] Select DAG",
-				zap.Stringer("kvReq range start", kvReq.KeyRanges[0].StartKey),
-				zap.Stringer("kvReq range end", kvReq.KeyRanges[0].EndKey))
-		}
-	}
 	if span := opentracing.SpanFromContext(ctx); span != nil && span.Tracer() != nil {
 		span1 := span.Tracer().StartSpan("distsql.Select", opentracing.ChildOf(span.Context()))
 		defer span1.Finish()

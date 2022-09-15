@@ -222,14 +222,6 @@ func (r *selectResult) fetchResp(ctx context.Context) error {
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if r.ctx.GetSessionVars().ConnectionID > 0 {
-			logutil.Logger(ctx).Info("[for debug] response info",
-				zap.Int("chunks", len(r.selectResp.Chunks)))
-			if len(r.selectResp.Chunks) > 0 {
-				logutil.Logger(ctx).Info("[for debug] response info",
-					zap.String("chunk[0]", r.selectResp.Chunks[0].String()))
-			}
-		}
 		respSize := int64(r.selectResp.Size())
 		atomic.StoreInt64(&r.selectRespSize, respSize)
 		r.memConsume(respSize)

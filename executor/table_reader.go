@@ -17,7 +17,6 @@ package executor
 import (
 	"bytes"
 	"context"
-	"go.uber.org/zap"
 	"time"
 
 	"github.com/opentracing/opentracing-go"
@@ -181,14 +180,6 @@ func (e *TableReaderExecutor) Open(ctx context.Context) error {
 			e.feedback.Invalidate()
 		}
 	}
-	if e.ctx.GetSessionVars().ConnectionID > 0 {
-		if len(e.ranges) > 0 {
-			logutil.Logger(ctx).Info("[for debug] TableReaderExecutor Open",
-				zap.Int("len(KeyRanges)", len(e.ranges)),
-				zap.Stringer("kvReq range start", e.ranges[0].LowVal[0]),
-				zap.Stringer("kvReq range end", e.ranges[0].HighVal[0]))
-		}
-	}
 	firstPartRanges, secondPartRanges := distsql.SplitRangesAcrossInt64Boundary(e.ranges, e.keepOrder, e.desc, e.table.Meta() != nil && e.table.Meta().IsCommonHandle)
 
 	// Treat temporary table as dummy table, avoid sending distsql request to TiKV.
@@ -324,14 +315,6 @@ func (e *TableReaderExecutor) buildResp(ctx context.Context, ranges []*ranger.Ra
 	})
 	e.kvRanges = append(e.kvRanges, kvReq.KeyRanges...)
 
-	if e.ctx.GetSessionVars().ConnectionID > 0 {
-		for _, kvRange := range kvReq.KeyRanges {
-			logutil.Logger(ctx).Info("[for debug] TableReader buildResp",
-				zap.Int("len(KeyRanges)", len(kvReq.KeyRanges)),
-				zap.Stringer("kvReq range start", kvRange.StartKey),
-				zap.Stringer("kvReq range end", kvRange.EndKey))
-		}
-	}
 	result, err := e.SelectResult(ctx, e.ctx, kvReq, retTypes(e), e.feedback, getPhysicalPlanIDs(e.plans), e.id)
 	if err != nil {
 		return nil, err
@@ -418,19 +401,12 @@ func (e *TableReaderExecutor) buildKVReq(ctx context.Context, ranges []*ranger.R
 	var builder distsql.RequestBuilder
 	var reqBuilder *distsql.RequestBuilder
 	if e.kvRangeBuilder != nil {
-		if e.ctx.GetSessionVars().ConnectionID > 0 {
-			logutil.Logger(ctx).Info("[for debug] TableReaderExecutor.buildKVReq e.kvRangeBuilder")
-		}
 		kvRange, err := e.kvRangeBuilder.buildKeyRange(ranges)
 		if err != nil {
 			return nil, err
 		}
 		reqBuilder = builder.SetKeyRanges(kvRange)
 	} else {
-		if e.ctx.GetSessionVars().ConnectionID > 0 {
-			logutil.Logger(ctx).Info("[for debug] TableReaderExecutor.buildKVReq no kv range builder",
-				zap.Bool("RowKeyShardedColumn", e.table.Meta().RowKeyShardedColumn == nil))
-		}
 		if e.table.Meta().RowKeyShardedColumn != nil {
 			reqBuilder = builder.SetShardedHandleRanges(e.ctx.GetSessionVars().StmtCtx, ranges, e.feedback, e.table.Meta())
 		} else {

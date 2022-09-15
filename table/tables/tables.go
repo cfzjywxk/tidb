@@ -858,11 +858,6 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 	} else {
 		key = t.RecordKey(recordID)
 	}
-	if sctx.GetSessionVars().ConnectionID > 0 {
-		logutil.Logger(ctx).Info("[for debug] addRecord is called",
-			zap.Stringer("key", key),
-			zap.Bool("isShardedKey", t.meta.RowKeyShardedColumn != nil))
-	}
 	logutil.BgLogger().Debug("addRecord",
 		zap.Stringer("key", key))
 	sc, rd := sessVars.StmtCtx, &sessVars.RowEncoder

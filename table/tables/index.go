@@ -16,8 +16,6 @@ package tables
 
 import (
 	"context"
-	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/zap"
 	"sync"
 
 	"github.com/opentracing/opentracing-go"
@@ -108,11 +106,6 @@ func (c *index) Create(sctx sessionctx.Context, txn kv.Transaction, indexedValue
 	key, distinct, err := c.GenIndexKey(vars.StmtCtx, indexedValues, h, writeBufs.IndexKeyBuf)
 	if err != nil {
 		return nil, err
-	}
-	if sctx.GetSessionVars().ConnectionID > 0 {
-		logutil.BgLogger().Info("[for debug] index.Create is called",
-			zap.Stringer("key", kv.Key(key)),
-			zap.Bool("isShardedKey", c.idxInfo.IsShardedIndex()))
 	}
 
 	ctx := opt.Ctx
