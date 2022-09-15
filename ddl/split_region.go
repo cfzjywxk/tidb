@@ -60,6 +60,7 @@ func calculateShardSplitKeys(tbInfo *model.TableInfo) [][]byte {
 	keys := make([][]byte, 0, shardNum)
 	// The table space start key.
 	tableStartKey := tablecodec.GenTablePrefix(tbInfo.ID)
+	logutil.BgLogger().Info("calculateShardSplitKeys", zap.Stringer("tableStartKey", tableStartKey))
 	keys = append(keys, tableStartKey)
 
 	// The shard space start key and shard keys.
@@ -69,6 +70,8 @@ func calculateShardSplitKeys(tbInfo *model.TableInfo) [][]byte {
 		if shardID > math.MaxUint16-shardStep {
 			panic("shardID would overflow")
 		}
+		curKey := tablecodec.GenTableShardedRecordPrefixWithShardID(tbInfo.ID, shardID)
+		logutil.BgLogger().Info("calculateShardSplitKeys", zap.Stringer("curKey", curKey))
 		keys = append(keys, tablecodec.GenTableShardedRecordPrefixWithShardID(tbInfo.ID, shardID))
 		shardID += shardStep
 	}
