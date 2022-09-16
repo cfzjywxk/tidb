@@ -637,6 +637,9 @@ func NewTableWithKeyRange(db *model.DBInfo, table *model.TableInfo) TableInfoWit
 
 func newTableWithKeyRange(db *model.DBInfo, table *model.TableInfo) TableInfoWithKeyRange {
 	sk, ek := tablecodec.GetTableHandleKeyRange(table.ID)
+	if table.RowKeyShardedColumn != nil {
+		ek = tablecodec.GetShardTableEndKey(table.ID)
+	}
 	startKey := bytesKeyToHex(codec.EncodeBytes(nil, sk))
 	endKey := bytesKeyToHex(codec.EncodeBytes(nil, ek))
 	return TableInfoWithKeyRange{

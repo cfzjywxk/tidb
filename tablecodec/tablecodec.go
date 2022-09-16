@@ -1146,12 +1146,16 @@ func GetTableHandleKeyRange(tableID int64) (startKey, endKey []byte) {
 	return
 }
 
-// GetTableShardEndKey returns t[table_id]_s[0xFFFF]
-func GetTableShardEndKey(tableID int64) (endKey []byte) {
-	buf := make([]byte, 0, prefixLen+2)
+// GetShardTableEndKey returns t[table_id]_s[0xFFFF]_r[maxUint64]
+// 7480000000000000445f73ffff5f72ffffffffffffffff
+func GetShardTableEndKey(tableID int64) []byte {
+	maxHandleEncoded := kv.IntHandle(math.MaxInt64).Encoded()
+	buf := make([]byte, 0, prefixLen+2 /*shard id*/ +2 /*_r*/ +len(maxHandleEncoded))
 	buf = appendTableShardPrefix(buf, tableID)
 	buf = appendShardID(buf, math.MaxUint16)
-	return
+	buf = appendRecordPrefix(buf)
+	buf = append(buf, maxHandleEncoded...)
+	return buf
 }
 
 // GetTableIndexKeyRange returns table index's key range with tableID and indexID.
