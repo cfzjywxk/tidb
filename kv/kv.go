@@ -381,6 +381,14 @@ type Request struct {
 	RequestSource util.RequestSource
 }
 
+func (req *Request) GetKeyRanges() []*KeyRange {
+	ranges := make([]*KeyRange, 0, len(req.KeyRanges))
+	for i := 0; i < len(req.KeyRanges); i++ {
+		ranges = append(ranges, &req.KeyRanges[i])
+	}
+	return ranges
+}
+
 // CoprRequestAdjuster is used to check and adjust a copr request according to specific rules.
 // return true if the request is changed.
 type CoprRequestAdjuster func(*Request, int) bool

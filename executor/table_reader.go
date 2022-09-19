@@ -17,6 +17,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"go.uber.org/zap"
 	"time"
 
 	"github.com/opentracing/opentracing-go"
@@ -180,7 +181,18 @@ func (e *TableReaderExecutor) Open(ctx context.Context) error {
 			e.feedback.Invalidate()
 		}
 	}
+	if e.ctx.GetSessionVars().ConnectionID > 0 {
+		logutil.Logger(ctx).Info("[for debug] TableReaderExecutor.Open",
+			zap.Stringers("e.ranges", e.ranges))
+	}
 	firstPartRanges, secondPartRanges := distsql.SplitRangesAcrossInt64Boundary(e.ranges, e.keepOrder, e.desc, e.table.Meta() != nil && e.table.Meta().IsCommonHandle)
+	if e.ctx.GetSessionVars().ConnectionID > 0 {
+		logutil.Logger(ctx).Info("[for debug] TableReaderExecutor.Open",
+			zap.Stringers("e.ranges", e.ranges),
+			zap.Stringers("firstPartRanges", firstPartRanges),
+			zap.Stringers("secondPartRanges", secondPartRanges),
+		)
+	}
 
 	// Treat temporary table as dummy table, avoid sending distsql request to TiKV.
 	// Calculate the kv ranges here, UnionScan rely on this kv ranges.
@@ -407,10 +419,19 @@ func (e *TableReaderExecutor) buildKVReq(ctx context.Context, ranges []*ranger.R
 		}
 		reqBuilder = builder.SetKeyRanges(kvRange)
 	} else {
+		if e.ctx.GetSessionVars().ConnectionID > 0 {
+			logutil.Logger(ctx).Info("[for debug] buildKVReq")
+		}
 		if e.table.Meta().RowKeyShardedColumn != nil {
 			reqBuilder = builder.SetShardedHandleRanges(e.ctx.GetSessionVars().StmtCtx, ranges, e.feedback, e.table.Meta())
 		} else {
 			reqBuilder = builder.SetHandleRanges(e.ctx.GetSessionVars().StmtCtx, getPhysicalTableID(e.table), e.table.Meta() != nil && e.table.Meta().IsCommonHandle, ranges, e.feedback)
+		}
+		if e.ctx.GetSessionVars().ConnectionID > 0 {
+			logutil.Logger(ctx).Info("[for debug] buildKVReq",
+				zap.Stringers("ranges", ranges),
+				zap.Stringers("kvRanges", reqBuilder.Request.GetKeyRanges()),
+				zap.Stack("stack"))
 		}
 	}
 	reqBuilder.

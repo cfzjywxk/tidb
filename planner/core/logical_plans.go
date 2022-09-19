@@ -1393,6 +1393,14 @@ func (ds *DataSource) deriveCommonHandleTablePathStats(path *util.AccessPath, co
 // deriveTablePathStats will fulfill the information that the AccessPath need.
 // isIm indicates whether this function is called to generate the partial path for IndexMerge.
 func (ds *DataSource) deriveTablePathStats(path *util.AccessPath, conds []expression.Expression, isIm bool) error {
+	defer func() {
+		if ds.SCtx().GetSessionVars().ConnectionID > 0 {
+			logutil.BgLogger().Info("[for debug] deriveTablePathStats",
+				zap.Stringers("ranges", path.Ranges),
+				zap.Int("len(conds)", len(conds)),
+				zap.Bool("IsTablePath", path.IsTablePath()))
+		}
+	}()
 	if path.IsCommonHandlePath {
 		return ds.deriveCommonHandleTablePathStats(path, conds, isIm)
 	}
