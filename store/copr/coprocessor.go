@@ -171,6 +171,7 @@ func (c *CopClient) Send(ctx context.Context, req *kv.Request, variables interfa
 	}
 
 	ctx = context.WithValue(ctx, tikv.RPCCancellerCtxKey{}, it.rpcCancel)
+	it.connID = option.ConnectionID
 	it.open(ctx, enabledRateLimitAction, option.EnableCollectExecutionInfo)
 	return it
 }
@@ -333,6 +334,8 @@ type copIterator struct {
 	committedLocks util.TSSet
 
 	actionOnExceed *rateLimitAction
+
+	connID uint64
 }
 
 // copIteratorWorker receives tasks from copIteratorTaskSender, handles tasks and sends the copResponse to respChan.
@@ -351,6 +354,8 @@ type copIteratorWorker struct {
 	replicaReadSeed uint32
 
 	enableCollectExecutionInfo bool
+
+	connID uint64
 }
 
 // copIteratorTaskSender sends tasks to taskCh then wait for the workers to exit.
@@ -472,6 +477,7 @@ func (it *copIterator) open(ctx context.Context, enabledRateLimitAction, enableC
 			memTracker:                 it.memTracker,
 			replicaReadSeed:            it.replicaReadSeed,
 			enableCollectExecutionInfo: enableCollectExecutionInfo,
+			connID:                     it.connID,
 		}
 		go worker.run(ctx)
 	}

@@ -397,7 +397,8 @@ type TableInfo struct {
 	ForeignKeys []*FKInfo         `json:"fk_info"`
 	State       SchemaState       `json:"state"`
 	// PKIsHandle is true when primary key is a single integer column.
-	PKIsHandle bool `json:"pk_is_handle"`
+	PKIsHandle   bool         `json:"pk_is_handle"`
+	ShardingInfo ShardingInfo `json:"sharding_info"`
 	// IsCommonHandle is true when clustered index feature is
 	// enabled and the primary key is not a single integer column.
 	IsCommonHandle bool `json:"is_common_handle"`
@@ -805,6 +806,13 @@ func (t *TableInfo) ClearPlacement() {
 			def.PlacementPolicyRef = nil
 		}
 	}
+}
+
+func (t *TableInfo) IsShardedTable() bool {
+	if t.ShardingInfo.ShardingColumn != nil && t.ShardingInfo.ShardingNum > 0 {
+		return true
+	}
+	return false
 }
 
 // NewExtraHandleColInfo mocks a column info for extra handle column.
@@ -1284,6 +1292,12 @@ const (
 	IndexTypeRtree
 )
 
+type ShardingInfo struct {
+	ShardingColumn *ColumnInfo
+	ShardingNum    uint64
+	ColIndexOffset int
+}
+
 // IndexInfo provides meta data describing a DB index.
 // It corresponds to the statement `CREATE INDEX Name ON Table (Column);`
 // See https://dev.mysql.com/doc/refman/5.7/en/create-index.html
@@ -1293,12 +1307,13 @@ type IndexInfo struct {
 	Table     CIStr          `json:"tbl_name"` // Table name.
 	Columns   []*IndexColumn `json:"idx_cols"` // Index columns.
 	State     SchemaState    `json:"state"`
-	Comment   string         `json:"comment"`      // Comment
-	Tp        IndexType      `json:"index_type"`   // Index type: Btree, Hash or Rtree
-	Unique    bool           `json:"is_unique"`    // Whether the index is unique.
-	Primary   bool           `json:"is_primary"`   // Whether the index is primary key.
-	Invisible bool           `json:"is_invisible"` // Whether the index is invisible.
-	Global    bool           `json:"is_global"`    // Whether the index is global.
+	Comment   string         `json:"comment"`       // Comment
+	Tp        IndexType      `json:"index_type"`    // Index type: Btree, Hash or Rtree
+	Unique    bool           `json:"is_unique"`     // Whether the index is unique.
+	Primary   bool           `json:"is_primary"`    // Whether the index is primary key.
+	Invisible bool           `json:"is_invisible"`  // Whether the index is invisible.
+	Global    bool           `json:"is_global"`     // Whether the index is global.
+	Shard     ShardingInfo   `json:"sharding_info"` // The sharding information.
 }
 
 // Clone clones IndexInfo.
@@ -1307,6 +1322,9 @@ func (index *IndexInfo) Clone() *IndexInfo {
 	ni.Columns = make([]*IndexColumn, len(index.Columns))
 	for i := range index.Columns {
 		ni.Columns[i] = index.Columns[i].Clone()
+	}
+	if index.Shard.ShardingNum > 0 {
+		ni.Shard.ShardingColumn = index.Shard.ShardingColumn.Clone()
 	}
 	return &ni
 }
@@ -1335,6 +1353,13 @@ func (index *IndexInfo) HasColumnInIndexColumns(tblInfo *TableInfo, colID int64)
 func (index *IndexInfo) FindColumnByName(nameL string) *IndexColumn {
 	_, ret := FindIndexColumnByName(index.Columns, nameL)
 	return ret
+}
+
+func (index *IndexInfo) IsShardedIndex() bool {
+	if index.Shard.ShardingNum > 0 {
+		return true
+	}
+	return false
 }
 
 // FindIndexColumnByName finds IndexColumn by name. When IndexColumn is not found, returns (-1, nil).

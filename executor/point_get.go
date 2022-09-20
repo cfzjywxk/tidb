@@ -17,7 +17,6 @@ package executor
 import (
 	"context"
 	"fmt"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/distsql"
@@ -311,7 +310,32 @@ func (e *PointGetExecutor) Next(ctx context.Context, req *chunk.Chunk) error {
 		}
 	}
 
-	key := tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
+	var key kv.Key
+	if e.tblInfo.IsShardedTable() {
+		var shardID uint16
+		dataRes, err := e.handle.Data()
+		if err != nil {
+			return err
+		}
+		if e.tblInfo.PKIsHandle {
+			handleData := dataRes[0]
+			shardID, err = tablecodec.HashShardInt(handleData)
+			if err != nil {
+				return err
+			}
+		} else if e.tblInfo.IsCommonHandle {
+			shardColData := dataRes[e.tblInfo.ShardingInfo.ColIndexOffset]
+			shardID, err = tablecodec.HashShardInt(shardColData)
+			if err != nil {
+				return err
+			}
+		} else {
+			return errors.Errorf("unexpected path for a shard table `%v` in point get executor", e.tblInfo.Name.String())
+		}
+		key = tablecodec.EncodeShardedRowKeyWithHandle(tblID, shardID, e.handle)
+	} else {
+		key = tablecodec.EncodeRowKeyWithHandle(tblID, e.handle)
+	}
 	val, err := e.getAndLock(ctx, key)
 	if err != nil {
 		return err

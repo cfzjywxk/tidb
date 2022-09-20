@@ -1420,6 +1420,9 @@ func (ds *DataSource) deriveTablePathStats(path *util.AccessPath, conds []expres
 		return nil
 	}
 	path.AccessConds, path.TableFilters = ranger.DetachCondsForColumn(ds.ctx, conds, pkCol)
+	if ds.table.Meta().IsShardedTable() {
+		path.TableFilters = append([]expression.Expression{}, conds...)
+	}
 	// If there's no access cond, we try to find that whether there's expression containing correlated column that
 	// can be used to access data.
 	corColInAccessConds := false

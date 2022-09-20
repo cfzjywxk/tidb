@@ -98,6 +98,7 @@ func Select(ctx context.Context, sctx sessionctx.Context, kvReq *kv.Request, fie
 		ctx = SetTiFlashMaxThreadsInContext(ctx, sctx)
 	}
 
+	option.ConnectionID = sctx.GetSessionVars().ConnectionID
 	resp := sctx.GetClient().Send(ctx, kvReq, sctx.GetSessionVars().KVVars, option)
 	if resp == nil {
 		return nil, errors.New("client returns nil response")

@@ -270,6 +270,7 @@ type ClientSendOption struct {
 	EnabledRateLimitAction     bool
 	EventCb                    trxevents.EventCallback
 	EnableCollectExecutionInfo bool
+	ConnectionID               uint64
 }
 
 // ReqTypes.
@@ -378,6 +379,14 @@ type Request struct {
 	}
 	// RequestSource indicates whether the request is an internal request.
 	RequestSource util.RequestSource
+}
+
+func (req *Request) GetKeyRanges() []*KeyRange {
+	ranges := make([]*KeyRange, 0, len(req.KeyRanges))
+	for i := 0; i < len(req.KeyRanges); i++ {
+		ranges = append(ranges, &req.KeyRanges[i])
+	}
+	return ranges
 }
 
 // CoprRequestAdjuster is used to check and adjust a copr request according to specific rules.

@@ -280,6 +280,20 @@ func BuildIndexInfo(
 		} else {
 			idxInfo.Tp = indexOption.Tp
 		}
+
+		if indexOption.ShardingInfo.ShardingNum > 0 {
+			shardingCol := indexOption.ShardingInfo.ShardingColumn
+			idxOffset, idxCol := model.FindIndexColumnByName(idxColumns, shardingCol.Name.L)
+			if idxCol == nil {
+				return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack(
+					"column `%v` is used for shard but it does not exist in index `%v`",
+					shardingCol.Name.String(),
+					idxInfo.Name.String())
+			}
+			idxInfo.Shard.ShardingColumn = allTableColumns[idxCol.Offset]
+			idxInfo.Shard.ShardingNum = indexOption.ShardingInfo.ShardingNum
+			idxInfo.Shard.ColIndexOffset = idxOffset
+		}
 	} else {
 		// Use btree as default index type.
 		idxInfo.Tp = model.IndexTypeBtree

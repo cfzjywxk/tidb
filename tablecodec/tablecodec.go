@@ -17,6 +17,7 @@ package tablecodec
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/pingcap/tidb/util/vitess"
 	"math"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ var (
 	tablePrefix     = []byte{'t'}
 	recordPrefixSep = []byte("_r")
 	indexPrefixSep  = []byte("_i")
+	shardPrefixSep  = []byte("_s")
 	metaPrefix      = []byte{'m'}
 )
 
@@ -100,6 +102,31 @@ func EncodeRowKeyWithHandle(tableID int64, handle kv.Handle) kv.Key {
 	return EncodeRowKey(tableID, handle.Encoded())
 }
 
+// HashShardInt calculates the shard value from an input data.
+func HashShardInt(shardColumnVal types.Datum) (uint16, error) {
+	hashRes, err := vitess.HashUint64(shardColumnVal.GetUint64())
+	if err != nil {
+		return 0, err
+	}
+	shardID := uint16(hashRes)
+	return shardID, nil
+}
+
+// EncodeShardedRowKey encodes the table id and record handle into a kv.Key
+func EncodeShardedRowKey(tableID int64, shardID uint16, encodedHandle []byte) kv.Key {
+	buf := make([]byte, 0, prefixLen+2+2+len(encodedHandle))
+	buf = appendTableShardPrefix(buf, tableID)
+	buf = appendShardID(buf, shardID)
+	buf = appendRecordPrefix(buf)
+	buf = append(buf, encodedHandle...)
+	return buf
+}
+
+// EncodeShardedRowKeyWithHandle encodes the table id, row handle into a kv.Key
+func EncodeShardedRowKeyWithHandle(tableID int64, shardIO uint16, handle kv.Handle) kv.Key {
+	return EncodeShardedRowKey(tableID, shardIO, handle.Encoded())
+}
+
 // CutRowKeyPrefix cuts the row key prefix.
 func CutRowKeyPrefix(key kv.Key) []byte {
 	return key[prefixLen:]
@@ -109,6 +136,17 @@ func CutRowKeyPrefix(key kv.Key) []byte {
 func EncodeRecordKey(recordPrefix kv.Key, h kv.Handle) kv.Key {
 	buf := make([]byte, 0, len(recordPrefix)+h.Len())
 	buf = append(buf, recordPrefix...)
+	buf = append(buf, h.Encoded()...)
+	return buf
+}
+
+// EncodeShardedRecordKey encodes the recordPrefix, row handle into a kv.Key.
+func EncodeShardedRecordKey(shardedRecordPrefix kv.Key, shardID uint16, h kv.Handle) kv.Key {
+	// Format: prefix | shard_id(2 bytes) | _r(2 bytes) | handle.
+	buf := make([]byte, 0, len(shardedRecordPrefix)+4+h.Len())
+	buf = append(buf, shardedRecordPrefix...)
+	buf = appendShardID(buf, shardID)
+	buf = appendRecordPrefix(buf)
 	buf = append(buf, h.Encoded()...)
 	return buf
 }
@@ -988,12 +1026,37 @@ func appendTablePrefix(buf []byte, tableID int64) []byte {
 	return buf
 }
 
+// appendTableShardPrefix appends table prefix "t[tableID]_s" into buf.
+func appendTableShardPrefix(buf []byte, tableID int64) []byte {
+	buf = append(buf, tablePrefix...)
+	buf = codec.EncodeInt(buf, tableID)
+	buf = append(buf, shardPrefixSep...)
+	return buf
+}
+
 // appendTableRecordPrefix appends table record prefix  "t[tableID]_r".
 func appendTableRecordPrefix(buf []byte, tableID int64) []byte {
 	buf = append(buf, tablePrefix...)
 	buf = codec.EncodeInt(buf, tableID)
 	buf = append(buf, recordPrefixSep...)
 	return buf
+}
+
+// appendShardID is used to append the shard id into key.
+func appendShardID(buf []byte, shardID uint16) []byte {
+	var data [2]byte
+	binary.BigEndian.PutUint16(data[:], shardID)
+	return append(buf, data[:]...)
+}
+
+// appendRecordPrefix appends "_r" to the buffer
+func appendRecordPrefix(buf []byte) []byte {
+	return append(buf, recordPrefixSep...)
+}
+
+// appendIndexPrefix appends "_r" to the buffer
+func appendIndexPrefix(buf []byte) []byte {
+	return append(buf, indexPrefixSep...)
 }
 
 // appendTableIndexPrefix appends table index prefix  "t[tableID]_i".
@@ -1004,10 +1067,44 @@ func appendTableIndexPrefix(buf []byte, tableID int64) []byte {
 	return buf
 }
 
+// appendTableIndexShardPrefix appends table index prefix  "t[tableID]_s[shardID]_i".
+func appendTableIndexShardedPrefix(buf []byte, tableID int64, shardID uint16) []byte {
+	buf = append(buf, tablePrefix...)
+	buf = codec.EncodeInt(buf, tableID)
+	buf = append(buf, shardPrefixSep...)
+	buf = appendShardID(buf, shardID)
+	buf = append(buf, indexPrefixSep...)
+	return buf
+}
+
 // GenTableRecordPrefix composes record prefix with tableID: "t[tableID]_r".
 func GenTableRecordPrefix(tableID int64) kv.Key {
 	buf := make([]byte, 0, len(tablePrefix)+8+len(recordPrefixSep))
 	return appendTableRecordPrefix(buf, tableID)
+}
+
+// GenTableShardedPrefix composes record prefix with tableID: "t[tableID]_s".
+func GenTableShardedPrefix(tableID int64) kv.Key {
+	buf := make([]byte, 0, len(tablePrefix)+8+len(shardPrefixSep))
+	return appendTableShardPrefix(buf, tableID)
+}
+
+// GenTableShardedRecordPrefixWithShardID composes record prefix with tableID: "t[tableID]_s[shard_id]".
+func GenTableShardedRecordPrefixWithShardID(tableID int64, shardID uint16) kv.Key {
+	buf := make([]byte, 0, len(tablePrefix)+8+len(shardPrefixSep)+2)
+	buf = appendTableShardPrefix(buf, tableID)
+	buf = appendShardID(buf, shardID)
+	return buf
+}
+
+// GenTableShardedRecordPrefixWithShardIDRange composes record prefix with tableID: "t[tableID]_s[shard_id]_r".
+func GenTableShardedRecordPrefixWithShardIDRange(tableID int64, shardID uint16, val []byte) kv.Key {
+	buf := make([]byte, 0, len(tablePrefix)+8+len(shardPrefixSep)+2+len(recordPrefixSep)+len(val))
+	buf = appendTableShardPrefix(buf, tableID)
+	buf = appendShardID(buf, shardID)
+	buf = appendRecordPrefix(buf)
+	buf = append(buf, val...)
+	return buf
 }
 
 // GenTableIndexPrefix composes index prefix with tableID: "t[tableID]_i".
@@ -1074,6 +1171,18 @@ func GetTableHandleKeyRange(tableID int64) (startKey, endKey []byte) {
 	return
 }
 
+// GetShardTableEndKey returns t[table_id]_s[0xFFFF]_r[maxUint64]
+// 7480000000000000445f73ffff5f72ffffffffffffffff
+func GetShardTableEndKey(tableID int64) []byte {
+	maxHandleEncoded := kv.IntHandle(math.MaxInt64).Encoded()
+	buf := make([]byte, 0, prefixLen+2 /*shard id*/ +2 /*_r*/ +len(maxHandleEncoded))
+	buf = appendTableShardPrefix(buf, tableID)
+	buf = appendShardID(buf, math.MaxUint16)
+	buf = appendRecordPrefix(buf)
+	buf = append(buf, maxHandleEncoded...)
+	return buf
+}
+
 // GetTableIndexKeyRange returns table index's key range with tableID and indexID.
 func GetTableIndexKeyRange(tableID, indexID int64) (startKey, endKey []byte) {
 	startKey = EncodeIndexSeekKey(tableID, indexID, nil)
@@ -1092,6 +1201,16 @@ func GetIndexKeyBuf(buf []byte, defaultCap int) []byte {
 // GenIndexKey generates index key using input physical table id
 func GenIndexKey(sc *stmtctx.StatementContext, tblInfo *model.TableInfo, idxInfo *model.IndexInfo,
 	phyTblID int64, indexedValues []types.Datum, h kv.Handle, buf []byte) (key []byte, distinct bool, err error) {
+	var shardID uint16
+	if idxInfo.IsShardedIndex() {
+		// TODO: A dirty hack, append the sharded column value to the end of the indexedValues, try to use a better way.
+		hashRes, err := vitess.HashUint64(indexedValues[len(indexedValues)-1].GetUint64())
+		if err != nil {
+			return nil, false, err
+		}
+		shardID = uint16(hashRes)
+		indexedValues = indexedValues[0 : len(indexedValues)-1]
+	}
 	if idxInfo.Unique {
 		// See https://dev.mysql.com/doc/refman/5.7/en/create-index.html
 		// A UNIQUE index creates a constraint such that all values in the index must be distinct.
@@ -1109,7 +1228,11 @@ func GenIndexKey(sc *stmtctx.StatementContext, tblInfo *model.TableInfo, idxInfo
 	// using col_name(length) syntax to specify an index prefix length.
 	TruncateIndexValues(tblInfo, idxInfo, indexedValues)
 	key = GetIndexKeyBuf(buf, RecordRowKeyLen+len(indexedValues)*9+9)
-	key = appendTableIndexPrefix(key, phyTblID)
+	if idxInfo.IsShardedIndex() {
+		key = appendTableIndexShardedPrefix(key, phyTblID, shardID)
+	} else {
+		key = appendTableIndexPrefix(key, phyTblID)
+	}
 	key = codec.EncodeInt(key, idxInfo.ID)
 	key, err = codec.EncodeKey(sc, key, indexedValues...)
 	if err != nil {

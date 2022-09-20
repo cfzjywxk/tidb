@@ -1053,6 +1053,11 @@ func ConstructResultOfShowCreateTable(ctx sessionctx.Context, tableInfo *model.T
 		// If PKIsHandle, pk info is not in tb.Indices(). We should handle it here.
 		buf.WriteString(",\n")
 		fmt.Fprintf(buf, "  PRIMARY KEY (%s)", stringutil.Escape(pkCol.Name.O, sqlMode))
+		if tableInfo.ShardingInfo.ShardingNum > 0 {
+			fmt.Fprintf(buf, " HASH BY %s %d ",
+				stringutil.Escape(tableInfo.ShardingInfo.ShardingColumn.Name.String(), sqlMode),
+				tableInfo.ShardingInfo.ShardingNum)
+		}
 		buf.WriteString(" /*T![clustered_index] CLUSTERED */")
 	}
 
@@ -1089,6 +1094,10 @@ func ConstructResultOfShowCreateTable(ctx sessionctx.Context, tableInfo *model.T
 			cols = append(cols, colInfo)
 		}
 		fmt.Fprintf(buf, "(%s)", strings.Join(cols, ","))
+		if idxInfo.Shard.ShardingNum > 0 {
+			fmt.Fprintf(buf, " HASH BY %s %d ",
+				stringutil.Escape(idxInfo.Shard.ShardingColumn.Name.String(), sqlMode), idxInfo.Shard.ShardingNum)
+		}
 		if idxInfo.Invisible {
 			fmt.Fprintf(buf, ` /*!80000 INVISIBLE */`)
 		}

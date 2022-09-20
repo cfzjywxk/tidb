@@ -372,7 +372,32 @@ func (e *BatchPointGetExec) initialize(ctx context.Context) error {
 		if e.singlePart && e.partTblID != tID {
 			continue
 		}
-		key := tablecodec.EncodeRowKeyWithHandle(tID, handle)
+		var key kv.Key
+		if e.tblInfo.IsShardedTable() {
+			var shardID uint16
+			dataRes, err := handle.Data()
+			if err != nil {
+				return err
+			}
+			if e.tblInfo.PKIsHandle {
+				handleData := dataRes[0]
+				shardID, err = tablecodec.HashShardInt(handleData)
+				if err != nil {
+					return err
+				}
+			} else if e.tblInfo.IsCommonHandle {
+				shardColData := dataRes[e.tblInfo.ShardingInfo.ColIndexOffset]
+				shardID, err = tablecodec.HashShardInt(shardColData)
+				if err != nil {
+					return err
+				}
+			} else {
+				return errors.Errorf("unexpected path for a shard table `%v` in batch point get executor", e.tblInfo.Name.String())
+			}
+			key = tablecodec.EncodeShardedRowKeyWithHandle(tID, shardID, handle)
+		} else {
+			key = tablecodec.EncodeRowKeyWithHandle(tID, handle)
+		}
 		keys = append(keys, key)
 		newHandles = append(newHandles, handle)
 	}

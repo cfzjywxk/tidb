@@ -1769,6 +1769,21 @@ func extractAutoRandomBitsFromColDef(colDef *ast.ColumnDef) (shardBits, rangeBit
 	return 0, 0, nil
 }
 
+// checkShardInfo checks the shard grammar related constraints:
+// 1. The shard column should be the same column for a table.
+// 2. The shard number should be the same for a table.
+func isShardInfoMatch(existShardInfo *model.ShardingInfo, newShardInfo *model.ShardingInfo) bool {
+	if existShardInfo == nil || newShardInfo == nil {
+		return true
+	}
+	if existShardInfo.ShardingColumn.Offset != newShardInfo.ShardingColumn.Offset ||
+		existShardInfo.ShardingNum != newShardInfo.ShardingNum ||
+		existShardInfo.ColIndexOffset != newShardInfo.ColIndexOffset {
+		return false
+	}
+	return true
+}
+
 // BuildTableInfo creates a TableInfo.
 func BuildTableInfo(
 	ctx sessionctx.Context,
@@ -1790,6 +1805,7 @@ func BuildTableInfo(
 		tbInfo.Columns = append(tbInfo.Columns, v.ToInfo())
 		tblColumns = append(tblColumns, table.ToColumn(v.ToInfo()))
 	}
+	var existShardInfo *model.ShardingInfo
 	for _, constr := range constraints {
 		// Build hidden columns if necessary.
 		hiddenCols, err := buildHiddenColumnInfoWithCheck(ctx, constr.Keys, model.NewCIStr(constr.Name), tbInfo, tblColumns)
@@ -1844,6 +1860,39 @@ func BuildTableInfo(
 				}
 			}
 			if tbInfo.PKIsHandle {
+				if constr.Option != nil && constr.Option.ShardingInfo.ShardingNum > 0 {
+					shardColName := constr.Option.ShardingInfo.ShardingColumn.Name.String()
+					shardColumn := model.FindColumnInfo(tbInfo.Columns, shardColName)
+					if shardColumn == nil {
+						return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack(
+							"column is used for shard but it does not exist: %s", shardColName)
+					}
+					var pkCol *table.Column
+					for _, col := range cols {
+						if mysql.HasPriKeyFlag(col.GetFlag()) {
+							pkCol = col
+							break
+						}
+					}
+					if pkCol == nil {
+						return nil, dbterror.ErrKeyColumnDoesNotExits.GenWithStack(
+							"primary key column dose not exist for table=%v", tbInfo.Name.String())
+					}
+					tbInfo.ShardingInfo.ShardingColumn = shardColumn
+					tbInfo.ShardingInfo.ShardingNum = constr.Option.ShardingInfo.ShardingNum
+					if existShardInfo != nil {
+						if !isShardInfoMatch(existShardInfo, &tbInfo.ShardingInfo) {
+							return nil, errors.Errorf("error creating primary key, "+
+								"the shard column `%v` should be the same as the "+
+								"existing shard column `%v` for table `%v`, the shard number %v should be the same as as the "+
+								"existing shard number %v",
+								shardColumn.Name.String(), pkCol.Name.String(), tbInfo.Name.String(),
+								tbInfo.ShardingInfo.ShardingNum, existShardInfo.ShardingNum)
+						}
+					} else {
+						existShardInfo = &tbInfo.ShardingInfo
+					}
+				}
 				continue
 			}
 		}
@@ -1896,6 +1945,26 @@ func BuildTableInfo(
 			return nil, errors.Trace(err)
 		}
 		idxInfo.ID = AllocateIndexID(tbInfo)
+
+		if idxInfo.IsShardedIndex() {
+			if existShardInfo != nil {
+				if !isShardInfoMatch(existShardInfo, &idxInfo.Shard) {
+					return nil, errors.Errorf("error creating index `%v`, "+
+						"the shard column `%v` should be the same as the "+
+						"existing shard column `%v` for table `%v`, the shard number %v should be the same as as the "+
+						"existing shard number %v",
+						idxInfo.Name.String(), idxInfo.Shard.ShardingColumn.Name.String(),
+						existShardInfo.ShardingColumn.Name.String(), tbInfo.Name.String(),
+						idxInfo.Shard.ShardingNum, existShardInfo.ShardingNum)
+				}
+			} else {
+				existShardInfo = &idxInfo.Shard
+			}
+			if idxInfo.Primary {
+				tbInfo.ShardingInfo = idxInfo.Shard
+			}
+		}
+
 		tbInfo.Indices = append(tbInfo.Indices, idxInfo)
 	}
 

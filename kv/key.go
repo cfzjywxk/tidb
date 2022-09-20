@@ -136,6 +136,10 @@ func (r *KeyRange) IsPoint() bool {
 		bytes.Equal(r.StartKey[:diffOneIdx], r.EndKey[:diffOneIdx])
 }
 
+func (r *KeyRange) String() string {
+	return fmt.Sprintf("pointer=%p startKey=%v endKey=%v", r, r.StartKey, r.EndKey)
+}
+
 // Entry is the entry for key and value
 type Entry struct {
 	Key   Key

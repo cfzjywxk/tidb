@@ -1340,6 +1340,7 @@ import (
 	StatsOptionsOpt                        "Stats options"
 	DryRunOptions                          "Dry run options"
 	OptionalShardColumn                    "Optional shard column"
+	ShardingInfo                           "Index sharding information"
 
 %type	<ident>
 	AsOpt             "AS or EmptyString"
@@ -2336,6 +2337,15 @@ WithClustered:
 |	"NONCLUSTERED"
 	{
 		$$ = model.PrimaryKeyTypeNonClustered
+	}
+
+ShardingInfo:
+	"HASH" "BY" ColumnName NUM
+	{
+		$$ = ast.ShardingInfo{
+			ShardingColumn: $3.(*ast.ColumnName),
+			ShardingNum:    getUint64FromNUM($4),
+		}
 	}
 
 AlgorithmClause:
@@ -5889,6 +5899,12 @@ IndexOption:
 	{
 		$$ = &ast.IndexOption{
 			PrimaryKeyTp: $1.(model.PrimaryKeyType),
+		}
+	}
+|	ShardingInfo
+	{
+		$$ = &ast.IndexOption{
+			ShardingInfo: $1.(ast.ShardingInfo),
 		}
 	}
 
